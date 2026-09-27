@@ -48,3 +48,12 @@ def health():
         "status": "ok",
         "service": "RailSync AI",
     }
+
+
+@app.get("/")
+def root():
+    return {
+        "status": "online",
+        "service": "RailSync AI",
+        "message": "RailSync AI backend is running successfully",
+    }
