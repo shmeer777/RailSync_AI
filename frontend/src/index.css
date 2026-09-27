@@ -1,0 +1,248 @@
+@import "tailwindcss";
+
+:root,
+[data-theme="light"] {
+  /* LIGHT SECTION STYLE */
+  --bg-page: #F4F6F8;
+  --bg-surface: #F8FAFC;
+  --bg-subtle: #F1F5F9;
+  --bg-card: #FFFFFF;
+  --bg-card-hover: #F8FAFC;
+  --bg-elevated: #FFFFFF;
+  --bg-input: #FFFFFF;
+  --bg-table: #FFFFFF;
+  --bg-table-row: #FFFFFF;
+  --bg-table-row-hover: #F8FAFC;
+  --bg-hover: #F8FAFC;
+  --bg-modal: #FFFFFF;
+
+  /* Neutral Text & Borders */
+  --text-primary: #172B3A;
+  --text-secondary: #5B6773;
+  --text-muted: #8292A1;
+  --border: #D9E1E8;
+  --border-light: #D9E1E8;
+  --border-subtle: #E2E8F0;
+
+  /* Primary Blue */
+  --accent-blue: #1F6AA5;
+  --accent-blue-hover: #175484;
+  --accent-blue-subtle: #EBF3FA;
+  --link-color: #1F6AA5;
+
+  /* White Sidebar (Light Anchor) */
+  --bg-sidebar: #FFFFFF;
+  --sidebar-border: #D9E1E8;
+  --sidebar-text: #172B3A;
+  --sidebar-text-muted: #5B6773;
+  --sidebar-icon: #53687A;
+  --sidebar-hover: #F1F5F9;
+  --sidebar-active-bg: #1F6AA5;
+  --sidebar-active-text: #FFFFFF;
+
+  /* Top Header (#082B43) */
+  --bg-header: #082B43;
+  --header-search-bg: #0D344F;
+  --header-search-border: #234A64;
+  --header-text: #FFFFFF;
+  --header-text-muted: #B8CBD9;
+  --header-border: #234A64;
+
+  /* DARK OPERATIONAL PANELS */
+  --bg-op-panel: #082B43;
+  --bg-op-panel-secondary: #0D344F;
+  --bg-op-header: #082B43;
+  --bg-op-row: #082B43;
+  --bg-op-row-alt: #123D5A;
+  --bg-op-row-hover: #0D344F;
+  --op-border: #234A64;
+  --op-text-primary: #FFFFFF;
+  --op-text-secondary: #AFC2D2;
+  --op-text-muted: #8FA3B5;
+
+  /* Brand Navies */
+  --primary-navy: #082B43;
+  --deep-navy: #082B43;
+
+  /* Status Colors */
+  --status-normal-bg: #DEF7EC;
+  --status-normal-text: #03543F;
+  --status-normal-border: #BCF0DA;
+  --status-warning-bg: #FEF3C7;
+  --status-warning-text: #92400E;
+  --status-warning-border: #FDE68A;
+  --status-danger-bg: #FDE8E8;
+  --status-danger-text: #9B1C1C;
+  --status-danger-border: #F8B4B4;
+  --status-info-bg: #EAF3FA;
+  --status-info-text: #1F6AA5;
+  --status-info-border: #BFDBFE;
+
+  /* Error State Card */
+  --bg-error: #FEE2E2;
+  --border-error: #FECACA;
+  --text-error: #DC2626;
+
+  /* Scrollbar */
+  --scrollbar-track: #EEF2F6;
+  --scrollbar-thumb: #CBD5E1;
+  --scrollbar-thumb-hover: #94A3B8;
+}
+
+[data-theme="dark"],
+.dark {
+  /* TRUE DARK MODE (EXACT SPECIFICATION HIERARCHY) */
+  --bg-page: #090A0C;
+  --bg-surface: #121416;
+  --bg-subtle: #16181B;
+  --bg-card: #151719;
+  --bg-card-hover: #1D2024;
+  --bg-elevated: #1B1D20;
+  --bg-input: #121416;
+  --bg-table: #121416;
+  --bg-table-row: #16181B;
+  --bg-table-row-hover: #1D2024;
+  --bg-hover: #1D2024;
+  --bg-modal: #17191C;
+
+  /* Sidebar */
+  --bg-sidebar: #0E1012;
+  --sidebar-border: #2A2D32;
+  --sidebar-text: #F5F5F5;
+  --sidebar-text-muted: #858A91;
+  --sidebar-hover: #1D2024;
+  --sidebar-active-bg: #1B1D20;
+  --sidebar-active-text: #F5F5F5;
+
+  /* Top Header */
+  --bg-header: #101214;
+  --header-search-bg: #121416;
+  --header-search-border: #2A2D32;
+  --header-text: #F5F5F5;
+  --header-text-muted: #B9BDC4;
+  --header-border: #2A2D32;
+
+  /* Operational Panels & Containers */
+  --bg-op-panel: #151719;
+  --bg-op-panel-secondary: #1B1D20;
+  --bg-op-header: #101214;
+  --bg-op-row: #121416;
+  --bg-op-row-alt: #16181B;
+  --bg-op-row-hover: #1D2024;
+  --op-border: #2A2D32;
+  --op-text-primary: #F5F5F5;
+  --op-text-secondary: #B9BDC4;
+  --op-text-muted: #858A91;
+
+  /* Neutral Text & Borders */
+  --text-primary: #F5F5F5;
+  --text-secondary: #B9BDC4;
+  --text-muted: #858A91;
+  --border: #2A2D32;
+  --border-light: #2A2D32;
+  --border-subtle: #2A2D32;
+
+  /* Brand / Restrained Blue Accents */
+  --primary-navy: #151719;
+  --deep-navy: #101214;
+  --accent-blue: #3B82C4;
+  --accent-blue-hover: #2F6AA0;
+  --accent-blue-subtle: rgba(59, 130, 196, 0.14);
+  --link-color: #3B82C4;
+
+  /* Status Colors */
+  --status-normal-bg: rgba(53, 166, 107, 0.16);
+  --status-normal-text: #35A66B;
+  --status-normal-border: rgba(53, 166, 107, 0.35);
+  --status-warning-bg: rgba(217, 165, 46, 0.16);
+  --status-warning-text: #D9A52E;
+  --status-warning-border: rgba(217, 165, 46, 0.35);
+  --status-danger-bg: rgba(217, 87, 87, 0.16);
+  --status-danger-text: #D95757;
+  --status-danger-border: rgba(217, 87, 87, 0.35);
+  --status-info-bg: rgba(59, 130, 196, 0.16);
+  --status-info-text: #3B82C4;
+  --status-info-border: rgba(59, 130, 196, 0.35);
+
+  /* Error State Card (User Requirement #24) */
+  --bg-error: #211416;
+  --border-error: #6B2A32;
+  --text-error: #F5A0A8;
+
+  /* Scrollbar */
+  --scrollbar-track: #0E1012;
+  --scrollbar-thumb: #2A2D32;
+  --scrollbar-thumb-hover: #3A3E45;
+}
+
+/* REDUCED MOTION SUPPORT */
+[data-reduced-motion="true"] *,
+[data-reduced-motion="true"] *::before,
+[data-reduced-motion="true"] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+}
+
+/* COMPACT DENSITY SUPPORT */
+[data-compact-density="true"] .kpi-card {
+  padding: 10px 14px;
+}
+[data-compact-density="true"] .enterprise-table th,
+[data-compact-density="true"] .enterprise-table td {
+  padding: 6px 10px;
+}
+[data-compact-density="true"] .nav-item {
+  padding: 7px 12px;
+  font-size: 12px;
+}
+[data-compact-density="true"] .train-row,
+[data-compact-density="true"] .alert-row {
+  padding: 8px 12px;
+}
+
+html {
+  min-width: 320px;
+  max-width: 100vw;
+  overflow-x: hidden;
+  background-color: var(--bg-page);
+  color: var(--text-primary);
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+body {
+  min-width: 320px;
+  max-width: 100vw;
+  min-height: 100vh;
+  overflow-x: hidden;
+  background-color: var(--bg-page);
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+#root {
+  min-height: 100vh;
+  width: 100%;
+  max-width: 100vw;
+  overflow-x: hidden;
+  background-color: var(--bg-page);
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
