@@ -84,7 +84,8 @@ export interface AssetAvailabilityOptimizeRequest {
 export async function fetchAssetAvailability(
   planningWindow: string = 'night',
   staggerMultiBlocks: boolean = true,
-  startTime?: string | null
+  startTime?: string | null,
+  timeoutMs: number = 30000
 ): Promise<AssetAvailabilityResponse> {
   const queryParams = new URLSearchParams()
   if (planningWindow) queryParams.set('planning_window', planningWindow)
@@ -92,37 +93,69 @@ export async function fetchAssetAvailability(
   if (startTime) queryParams.set('start_time', startTime)
 
   const url = `${API_BASE_URL}/ai/asset-availability?${queryParams.toString()}`
-  const response = await fetch(url)
 
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}))
-    throw new Error(
-      errorData.detail || `Failed to fetch asset availability (${response.status})`
-    )
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+
+  try {
+    const response = await fetch(url, { signal: controller.signal })
+    clearTimeout(timer)
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}))
+      throw new Error(
+        errorData.detail || `Failed to fetch asset availability (${response.status})`
+      )
+    }
+
+    return response.json()
+  } catch (err: any) {
+    clearTimeout(timer)
+    if (err.name === 'AbortError') {
+      throw new Error(
+        'Optimization request timed out. The OR-Tools CP-SAT solver is taking longer than expected. Please retry calculation.'
+      )
+    }
+    throw err
   }
-
-  return response.json()
 }
 
 /**
  * Execute CP-SAT optimization with custom parameters.
  */
 export async function optimizeAssetAvailability(
-  payload: AssetAvailabilityOptimizeRequest
+  payload: AssetAvailabilityOptimizeRequest,
+  timeoutMs: number = 35000
 ): Promise<AssetAvailabilityResponse> {
   const url = `${API_BASE_URL}/ai/asset-availability/optimize`
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
 
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}))
-    throw new Error(
-      errorData.detail || `Failed to optimize asset availability (${response.status})`
-    )
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    })
+    clearTimeout(timer)
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}))
+      throw new Error(
+        errorData.detail || `Failed to optimize asset availability (${response.status})`
+      )
+    }
+
+    return response.json()
+  } catch (err: any) {
+    clearTimeout(timer)
+    if (err.name === 'AbortError') {
+      throw new Error(
+        'Optimization request timed out. The OR-Tools CP-SAT solver is taking longer than expected. Please retry.'
+      )
+    }
+    throw err
   }
-
-  return response.json()
 }

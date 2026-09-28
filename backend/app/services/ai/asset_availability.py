@@ -69,18 +69,42 @@ def _parse_start_time(time_str: str | None, base_dt: datetime | None = None) -> 
     return None
 
 
+_ASSET_AVAILABILITY_CACHE: dict[str, tuple[float, AssetAvailabilityResponse]] = {}
+_CACHE_TTL_SECONDS = 60.0
+
+
 def calculate_asset_availability(
     db: Session,
     request: AssetAvailabilityOptimizeRequest | None = None,
+    force_refresh: bool = False,
 ) -> AssetAvailabilityResponse:
     """
     Computes baseline vs. OR-Tools CP-SAT optimized asset availability across the modeled railway network.
     """
+    import time
+
     if request is None:
         request = AssetAvailabilityOptimizeRequest()
 
     window_pref = request.planning_window or "night"
     stagger_enabled = request.stagger_multi_blocks
+
+    # Check cache for PostgreSQL production/local environments (skip for sqlite in-memory tests)
+    is_sqlite_test = False
+    try:
+        bind_url = str(db.get_bind().url)
+        if "sqlite" in bind_url:
+            is_sqlite_test = True
+    except Exception:
+        pass
+
+    target_keys = sorted(request.target_block_codes or [])
+    cache_key = f"{window_pref}:{stagger_enabled}:{request.start_time}:{','.join(target_keys)}"
+
+    if not is_sqlite_test and not force_refresh and cache_key in _ASSET_AVAILABILITY_CACHE:
+        cached_time, cached_res = _ASSET_AVAILABILITY_CACHE[cache_key]
+        if time.time() - cached_time < _CACHE_TTL_SECONDS:
+            return cached_res
 
     # 1. Read actual operational blocks from database
     blocks = db.scalars(select(Block).order_by(Block.id)).all()
@@ -192,7 +216,7 @@ def calculate_asset_availability(
         time_saved_minutes=time_saved,
     )
 
-    return AssetAvailabilityResponse(
+    res = AssetAvailabilityResponse(
         total_assets=total_assets,
         planning_window=window_pref,
         horizon_minutes=horizon_minutes,
@@ -204,6 +228,12 @@ def calculate_asset_availability(
         explanation=explanation,
         human_approval_required=True,
     )
+
+    if not is_sqlite_test:
+        import time
+        _ASSET_AVAILABILITY_CACHE[cache_key] = (time.time(), res)
+
+    return res
 
 
 def _build_empty_maintenance_response(

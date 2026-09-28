@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, useRef } from 'react'
 import type { CSSProperties } from 'react'
 import {
   AlertCircle,
@@ -38,6 +38,10 @@ export default function AssetAvailabilitySection({
   const [loading, setLoading] = useState(true)
   const [optimizing, setOptimizing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [isSlow, setIsSlow] = useState(false)
+  const [isVerySlow, setIsVerySlow] = useState(false)
+
+  const requestIdRef = useRef(0)
 
   // Optimization Controls
   const [planningWindow, setPlanningWindow] = useState('night')
@@ -45,18 +49,47 @@ export default function AssetAvailabilitySection({
   const [selectedBlockFilter, setSelectedBlockFilter] = useState<string>('all')
 
   const loadAvailability = useCallback(async (isRefresh = false) => {
+    const currentRequestId = ++requestIdRef.current
     try {
       if (isRefresh) setOptimizing(true)
       else setLoading(true)
       setError(null)
+      setIsSlow(false)
+      setIsVerySlow(false)
+
+      const slowTimer = setTimeout(() => {
+        if (currentRequestId === requestIdRef.current) {
+          setIsSlow(true)
+        }
+      }, 3500)
+
+      const verySlowTimer = setTimeout(() => {
+        if (currentRequestId === requestIdRef.current) {
+          setIsVerySlow(true)
+        }
+      }, 12000)
 
       const result = await fetchAssetAvailability(planningWindow, staggerEnabled)
+
+      clearTimeout(slowTimer)
+      clearTimeout(verySlowTimer)
+
+      if (currentRequestId !== requestIdRef.current) {
+        return
+      }
+
       setData(result)
     } catch (err: any) {
-      setError(err.message || 'Failed to load asset availability.')
+      if (currentRequestId === requestIdRef.current) {
+        setError(err.message || 'Failed to load asset availability.')
+      }
     } finally {
-      setLoading(false)
-      setOptimizing(false)
+      if (currentRequestId === requestIdRef.current) {
+        setLoading(false)
+        setOptimizing(false)
+        setIsSlow(false)
+        setIsVerySlow(false)
+      }
     }
   }, [planningWindow, staggerEnabled])
 
@@ -97,13 +130,35 @@ export default function AssetAvailabilitySection({
           borderRadius: '12px',
           border: '1px solid var(--border-light, #2A2D32)',
           color: 'var(--text-secondary, #B9BDC4)',
-          gap: '12px',
+          gap: '14px',
+          textAlign: 'center',
         }}
       >
-        <Loader2 size={32} style={{ animation: 'spin 1s linear infinite', color: '#1F6AA5' }} />
-        <span style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary, #F5F5F5)' }}>
-          Calculating Network Asset Availability via OR-Tools CP-SAT...
-        </span>
+        <Loader2 size={36} style={{ animation: 'spin 1s linear infinite', color: '#1F6AA5' }} />
+        <div>
+          <span style={{ fontSize: '15px', fontWeight: 700, color: 'var(--text-primary, #F5F5F5)', display: 'block' }}>
+            Calculating Network Asset Availability via OR-Tools CP-SAT...
+          </span>
+          <p style={{ margin: '6px 0 0', fontSize: '12px', color: 'var(--text-secondary, #B9BDC4)', maxWidth: '520px' }}>
+            {isVerySlow
+              ? 'Optimization is taking longer than expected. Evaluating multi-corridor train conflict schedules on server...'
+              : isSlow
+                ? 'OR-Tools CP-SAT is evaluating multi-block possession windows, train conflicts, and crew capacity constraints across 75 blocks...'
+                : 'Solving constraint programming model for maximum operational throughput.'}
+          </p>
+        </div>
+
+        {isVerySlow && (
+          <button
+            type="button"
+            onClick={() => void loadAvailability(true)}
+            className="enterprise-btn-secondary"
+            style={{ marginTop: '8px', height: '32px', padding: '0 14px', fontSize: '12px' }}
+          >
+            <RefreshCw size={13} />
+            Retry Calculation
+          </button>
+        )}
         <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
       </div>
     )
@@ -118,28 +173,28 @@ export default function AssetAvailabilitySection({
           alignItems: 'center',
           justifyContent: 'center',
           padding: '60px 20px',
-          background: 'var(--bg-card, #FFFFFF)',
+          background: 'var(--bg-card, #151719)',
           borderRadius: '12px',
-          border: '1px solid #FECACA',
-          color: '#DC2626',
+          border: '1px solid #7F1D1D',
+          color: '#F87171',
           gap: '14px',
           textAlign: 'center',
         }}
       >
-        <AlertTriangle size={36} color="#DC2626" />
+        <AlertTriangle size={36} color="#EF4444" />
         <div>
-          <h3 style={{ margin: '0 0 6px', fontSize: '16px', fontWeight: 700, color: '#991B1B' }}>
+          <h3 style={{ margin: '0 0 6px', fontSize: '16px', fontWeight: 700, color: '#FCA5A5' }}>
             Unable to Calculate Asset Availability
           </h3>
-          <p style={{ margin: 0, fontSize: '13px', color: '#B91C1C', maxWidth: '500px' }}>
+          <p style={{ margin: 0, fontSize: '13px', color: '#F87171', maxWidth: '500px' }}>
             {error}
           </p>
         </div>
         <button
           type="button"
           onClick={() => void loadAvailability()}
-          className="btn-primary-railway"
-          style={{ padding: '8px 18px', fontSize: '13px' }}
+          className="enterprise-btn-primary"
+          style={{ height: '34px', padding: '0 18px', fontSize: '12.5px' }}
         >
           <RefreshCw size={14} />
           Retry Calculation
@@ -154,9 +209,56 @@ export default function AssetAvailabilitySection({
   const timeline = data?.timeline || []
   const totalAssets = data?.total_assets || blocks.length || 0
 
+  const hasMaintenanceData =
+    Boolean(data) &&
+    ((data?.baseline?.maintenance_tasks_completed ?? 0) > 0 ||
+      (data?.optimized?.maintenance_tasks_completed ?? 0) > 0 ||
+      (data?.baseline?.restricted_assets ?? 0) > 0 ||
+      (data?.optimized?.restricted_assets ?? 0) > 0 ||
+      (data?.optimized?.restricted_blocks?.length ?? 0) > 0)
+
+  if (!hasMaintenanceData && data) {
+    return (
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '60px 20px',
+          background: 'var(--bg-card, #151719)',
+          borderRadius: '12px',
+          border: '1px solid var(--border-light, #2A2D32)',
+          color: 'var(--text-secondary, #B9BDC4)',
+          gap: '14px',
+          textAlign: 'center',
+        }}
+      >
+        <CheckCircle2 size={36} color="#10B981" />
+        <div>
+          <h3 style={{ margin: '0 0 6px', fontSize: '16px', fontWeight: 700, color: 'var(--text-primary, #F5F5F5)' }}>
+            No maintenance data is available for asset-availability optimization.
+          </h3>
+          <p style={{ margin: 0, fontSize: '13px', color: 'var(--text-secondary, #B9BDC4)', maxWidth: '520px' }}>
+            All {totalAssets || 75} network assets and operational sections are currently 100% available for train movements with zero scheduled possession closures.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void loadAvailability(true)}
+          className="enterprise-btn-secondary"
+          style={{ height: '34px', padding: '0 16px', fontSize: '12.5px' }}
+        >
+          <RefreshCw size={14} />
+          Refresh Availability
+        </button>
+      </div>
+    )
+  }
+
   // Calculate available blocks list
   const restrictedCodes = new Set(
-    optimized?.restricted_blocks.map((b) => b.block_code.toUpperCase()) || []
+    optimized?.restricted_blocks?.map((b) => b.block_code?.toUpperCase()) || []
   )
   const availableBlocks = blocks.filter((b) => !restrictedCodes.has(b.code.toUpperCase()))
 

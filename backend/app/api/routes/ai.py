@@ -603,7 +603,7 @@ def optimize_network_asset_availability(
 ):
     from app.services.ai.asset_availability import calculate_asset_availability
 
-    return calculate_asset_availability(db=db, request=payload)
+    return calculate_asset_availability(db=db, request=payload, force_refresh=True)
 
 
 # ------------------------------------------------------------
