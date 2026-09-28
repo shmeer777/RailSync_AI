@@ -628,11 +628,12 @@ from app.schemas.urgency import (
     ),
 )
 def get_all_maintenance_urgency(
+    force_refresh: bool = False,
     db: Session = Depends(get_db),
 ):
     from app.services.ai.urgency_analyzer import calculate_all_urgencies
 
-    return calculate_all_urgencies(db=db)
+    return calculate_all_urgencies(db=db, force_refresh=force_refresh)
 
 
 @router.get(

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import {
   Activity,
@@ -124,24 +124,58 @@ export default function UrgencyPrioritySection() {
   const [filterLevel, setFilterLevel] = useState<string>('all')
   const [searchQuery, setSearchQuery] = useState<string>('')
   const [approvedSchedule, setApprovedSchedule] = useState(false)
+  const [isSlow, setIsSlow] = useState(false)
+  const [isVerySlow, setIsVerySlow] = useState(false)
+  const requestIdRef = useRef(0)
 
   const fetchData = useCallback(async (isRefresh = false) => {
+    const curId = ++requestIdRef.current
+    setIsSlow(false)
+    setIsVerySlow(false)
+
+    const slowTimer = setTimeout(() => {
+      if (requestIdRef.current === curId) setIsSlow(true)
+    }, 3500)
+    const verySlowTimer = setTimeout(() => {
+      if (requestIdRef.current === curId) setIsVerySlow(true)
+    }, 12000)
+
+    const controller = new AbortController()
+    const abortTimer = setTimeout(() => controller.abort(), 30000)
+
     try {
       if (isRefresh) setRefreshing(true)
       else setLoading(true)
       setError('')
 
-      const res = await fetch(`${API_BASE_URL}/ai/maintenance-urgency`)
+      const url = `${API_BASE_URL}/ai/maintenance-urgency${isRefresh ? '?force_refresh=true' : ''}`
+      const res = await fetch(url, { signal: controller.signal })
+      clearTimeout(abortTimer)
+
       if (!res.ok) {
-        throw new Error(`Failed to load urgency data (HTTP ${res.status})`)
+        const errorData = await res.json().catch(() => ({}))
+        throw new Error(errorData.detail || `Failed to load urgency data (HTTP ${res.status})`)
       }
       const json: MaintenanceUrgencyResponse = await res.json()
-      setData(json)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to fetch urgency data')
+      if (requestIdRef.current === curId) {
+        setData(json)
+      }
+    } catch (err: any) {
+      clearTimeout(abortTimer)
+      if (requestIdRef.current === curId) {
+        if (err.name === 'AbortError') {
+          setError('Urgency evaluation timed out. The solver is taking longer than expected. Please retry.')
+        } else {
+          setError(err instanceof Error ? err.message : 'Failed to fetch urgency data')
+        }
+      }
     } finally {
-      setLoading(false)
-      setRefreshing(false)
+      clearTimeout(slowTimer)
+      clearTimeout(verySlowTimer)
+      if (requestIdRef.current === curId) {
+        setLoading(false)
+        setRefreshing(false)
+      }
     }
   }, [])
 
@@ -150,6 +184,9 @@ export default function UrgencyPrioritySection() {
   }, [fetchData])
 
   const handleScheduleByUrgency = async () => {
+    const controller = new AbortController()
+    const abortTimer = setTimeout(() => controller.abort(), 35000)
+
     try {
       setScheduling(true)
       setError('')
@@ -157,15 +194,24 @@ export default function UrgencyPrioritySection() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ human_approved: true }),
+        signal: controller.signal,
       })
+      clearTimeout(abortTimer)
+
       if (!res.ok) {
-        throw new Error(`Scheduling failed (HTTP ${res.status})`)
+        const errorData = await res.json().catch(() => ({}))
+        throw new Error(errorData.detail || `Scheduling failed (HTTP ${res.status})`)
       }
       const json: UrgencyScheduleResponse = await res.json()
       setScheduleResult(json)
       setApprovedSchedule(false)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Scheduling failed')
+    } catch (err: any) {
+      clearTimeout(abortTimer)
+      if (err.name === 'AbortError') {
+        setError('Scheduling timed out. The OR-Tools CP-SAT solver is taking longer than expected. Please retry.')
+      } else {
+        setError(err instanceof Error ? err.message : 'Scheduling failed')
+      }
     } finally {
       setScheduling(false)
     }
@@ -715,26 +761,77 @@ export default function UrgencyPrioritySection() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={9} style={{ padding: '36px', textAlign: 'center', color: 'var(--text-secondary, #5B6773)' }}>
-                    <Loader2 size={24} style={{ animation: 'spin 1s linear infinite', margin: '0 auto 8px' }} />
-                    Evaluating multi-factor maintenance urgencies...
+                  <td colSpan={9} style={{ padding: '42px 20px', textAlign: 'center', color: 'var(--text-secondary, #5B6773)' }}>
+                    <Loader2 size={28} style={{ animation: 'spin 1s linear infinite', margin: '0 auto 10px', color: '#1F5F9C' }} />
+                    <div style={{ fontWeight: 700, fontSize: '14.5px', color: 'var(--text-primary, #172B3A)', marginBottom: '5px' }}>
+                      Evaluating multi-factor maintenance urgencies...
+                    </div>
+                    <div style={{ fontSize: '12px', color: 'var(--text-secondary, #6B7280)', maxWidth: '520px', margin: '0 auto' }}>
+                      {isVerySlow
+                        ? 'Evaluation is taking longer than expected on cloud resources. Calculating corridor traffic and ML risk factors...'
+                        : isSlow
+                          ? 'Evaluating task dependencies, deadline pressure, and corridor traffic across blocks...'
+                          : 'Combining risk, priority, downstream dependency impact, deadlines, and traffic.'}
+                    </div>
+                    {isVerySlow && (
+                      <button
+                        type="button"
+                        onClick={() => void fetchData(true)}
+                        className="enterprise-btn-secondary"
+                        style={{ marginTop: '12px', height: '30px', padding: '0 14px', fontSize: '12px' }}
+                      >
+                        <RefreshCw size={13} />
+                        Retry Calculation
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ) : error && (!data || data.items.length === 0) ? (
+                <tr>
+                  <td colSpan={9} style={{ padding: '42px 20px', textAlign: 'center', color: '#dc2626' }}>
+                    <AlertCircle size={32} style={{ margin: '0 auto 8px', color: '#ef4444' }} />
+                    <div style={{ fontWeight: 700, fontSize: '15px', color: '#991b1b', marginBottom: '6px' }}>
+                      Unable to evaluate maintenance urgencies
+                    </div>
+                    <div style={{ fontSize: '13px', color: '#b91c1c', maxWidth: '500px', margin: '0 auto 12px' }}>
+                      {error}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void fetchData(true)}
+                      className="enterprise-btn-primary"
+                      style={{ height: '34px', padding: '0 16px', fontSize: '12px' }}
+                    >
+                      <RefreshCw size={13} />
+                      Retry Loading Urgencies
+                    </button>
+                  </td>
+                </tr>
+              ) : data && data.total_tasks === 0 ? (
+                <tr>
+                  <td colSpan={9} style={{ padding: '42px 20px', textAlign: 'center', color: 'var(--text-secondary, #6B7280)' }}>
+                    <CheckCircle2 size={32} style={{ margin: '0 auto 8px', color: '#10b981' }} />
+                    <div style={{ fontWeight: 700, fontSize: '15px', color: 'var(--text-primary, #172B3A)', marginBottom: '4px' }}>
+                      No active maintenance tasks available for urgency evaluation.
+                    </div>
+                    <div style={{ fontSize: '13px', color: 'var(--text-secondary, #6B7280)', maxWidth: '520px', margin: '0 auto 12px' }}>
+                      All railway assets and operational sections are currently clear with zero pending maintenance tasks.
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void fetchData(true)}
+                      className="enterprise-btn-secondary"
+                      style={{ height: '32px', padding: '0 14px', fontSize: '12px' }}
+                    >
+                      <RefreshCw size={13} />
+                      Refresh
+                    </button>
                   </td>
                 </tr>
               ) : filteredItems.length === 0 ? (
                 <tr>
                   <td colSpan={9} style={{ padding: '36px', textAlign: 'center', color: '#68899a' }}>
-                    <div>{error ? error : 'No maintenance tasks match the selected criteria.'}</div>
-                    {error && (
-                      <button
-                        type="button"
-                        onClick={() => void fetchData(true)}
-                        className="btn-primary-railway"
-                        style={{ marginTop: '10px', padding: '6px 14px', fontSize: '12px' }}
-                      >
-                        <RefreshCw size={13} />
-                        Retry Loading Urgencies
-                      </button>
-                    )}
+                    <div>No maintenance tasks match the selected criteria.</div>
                   </td>
                 </tr>
               ) : (

@@ -43,6 +43,7 @@ export interface MaintenanceUrgencyResponse {
   high_count: number
   medium_count: number
   low_count: number
+  average_urgency_score?: number
   items: MaintenanceUrgencyItem[]
   decision_support_note: string
 }
@@ -221,10 +222,32 @@ export interface MaintenancePlanApplyResponse {
 
 // --- API METHODS ---
 
-export async function fetchMaintenanceUrgency(): Promise<MaintenanceUrgencyResponse> {
-  const res = await fetch(`${API_BASE_URL}/ai/maintenance-urgency`)
-  if (!res.ok) throw new Error('Failed to fetch maintenance urgency analysis.')
-  return res.json()
+export async function fetchMaintenanceUrgency(
+  forceRefresh: boolean = false,
+  timeoutMs: number = 30000
+): Promise<MaintenanceUrgencyResponse> {
+  const url = `${API_BASE_URL}/ai/maintenance-urgency${forceRefresh ? '?force_refresh=true' : ''}`
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+
+  try {
+    const res = await fetch(url, { signal: controller.signal })
+    clearTimeout(timer)
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}))
+      throw new Error(errorData.detail || `Failed to fetch maintenance urgency analysis (${res.status})`)
+    }
+    return res.json()
+  } catch (err: any) {
+    clearTimeout(timer)
+    if (err.name === 'AbortError') {
+      throw new Error(
+        'Urgency evaluation timed out. The multi-factor evaluation is taking longer than expected. Please retry calculation.'
+      )
+    }
+    throw err
+  }
 }
 
 export async function fetchTaskUrgency(maintenanceId: number): Promise<MaintenanceUrgencyItem> {

@@ -22,6 +22,7 @@ Provides CP-SAT urgency-aware scheduling:
 """
 
 from datetime import datetime, timezone, timedelta
+import time
 from typing import Any
 from ortools.sat.python import cp_model
 from sqlalchemy import select
@@ -41,6 +42,10 @@ from app.schemas.urgency import (
 )
 from app.services.ai.maintenance_risk import calculate_maintenance_risk
 from app.services.ai.traffic_estimator import get_all_blocks_traffic
+
+# In-memory result cache for urgency evaluation (60s TTL)
+_URGENCY_CACHE: dict[str, dict[str, Any]] = {}
+_URGENCY_CACHE_TTL_SECONDS = 60
 
 
 def _normalize_code(val: str | None) -> str:
@@ -356,11 +361,20 @@ def calculate_task_urgency(
 def calculate_all_urgencies(
     db: Session,
     target_ids: list[int] | None = None,
+    force_refresh: bool = False,
 ) -> MaintenanceUrgencyResponse:
     """
     Computes urgency analysis for all active or specified maintenance records.
     Integrates real database traffic, completed historical records, and ML model predictions.
     """
+    cache_key = f"urgency_{sorted(target_ids or [])}"
+    is_sqlite_test = "sqlite" in str(getattr(db.bind, "url", ""))
+
+    if not force_refresh and not is_sqlite_test and cache_key in _URGENCY_CACHE:
+        entry = _URGENCY_CACHE[cache_key]
+        if (time.time() - entry["timestamp"]) < _URGENCY_CACHE_TTL_SECONDS:
+            return entry["response"]
+
     query = select(Maintenance).where(
         Maintenance.status.notin_(["Completed", "Cancelled"])
     )
@@ -433,7 +447,7 @@ def calculate_all_urgencies(
     low_count = sum(1 for i in items if i.urgency_level == "Low")
     avg_score = round(sum(i.urgency_score for i in items) / len(items), 1) if items else 0.0
 
-    return MaintenanceUrgencyResponse(
+    resp = MaintenanceUrgencyResponse(
         total_tasks=len(items),
         critical_count=critical_count,
         high_count=high_count,
@@ -442,6 +456,14 @@ def calculate_all_urgencies(
         average_urgency_score=avg_score,
         items=items,
     )
+
+    if not is_sqlite_test:
+        _URGENCY_CACHE[cache_key] = {
+            "timestamp": time.time(),
+            "response": resp,
+        }
+
+    return resp
 
 
 def schedule_by_urgency(
