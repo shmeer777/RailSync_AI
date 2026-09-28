@@ -248,29 +248,82 @@ export async function fetchBundleImpact(bundleId: string): Promise<MaintenanceIm
 export async function fetchMaintenancePlan(
   horizon: 'week' | 'month' = 'week',
   startDate?: string | null,
-  init?: RequestInit
+  forceRefresh: boolean = false,
+  init?: RequestInit,
+  timeoutMs: number = 35000
 ): Promise<MaintenancePlanResponse> {
   const params = new URLSearchParams({ horizon })
   if (startDate) params.set('start_date', startDate)
-  const res = await fetch(`${API_BASE_URL}/ai/maintenance-plan?${params.toString()}`, {
-    ...init,
-  })
-  if (!res.ok) throw new Error('Failed to fetch maintenance plan.')
-  return res.json()
+  if (forceRefresh) params.set('force_refresh', 'true')
+
+  const url = `${API_BASE_URL}/ai/maintenance-plan?${params.toString()}`
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+
+  try {
+    const res = await fetch(url, {
+      ...init,
+      signal: init?.signal || controller.signal,
+    })
+    clearTimeout(timer)
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}))
+      throw new Error(
+        errorData.detail || `Failed to fetch maintenance plan (${res.status})`
+      )
+    }
+
+    return res.json()
+  } catch (err: any) {
+    clearTimeout(timer)
+    if (err.name === 'AbortError') {
+      throw new Error(
+        'Optimization request timed out. The OR-Tools CP-SAT multi-day solver is taking longer than expected. Please retry calculation.'
+      )
+    }
+    throw err
+  }
 }
 
 export async function optimizeMaintenancePlan(
   payload: MaintenancePlanOptimizeRequest,
-  init?: RequestInit
+  init?: RequestInit,
+  timeoutMs: number = 40000
 ): Promise<MaintenancePlanResponse> {
-  const res = await fetch(`${API_BASE_URL}/ai/maintenance-plan/optimize`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-    ...init,
-  })
-  if (!res.ok) throw new Error('Failed to optimize multi-day maintenance plan.')
-  return res.json()
+  const url = `${API_BASE_URL}/ai/maintenance-plan/optimize`
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      ...init,
+      signal: init?.signal || controller.signal,
+    })
+    clearTimeout(timer)
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}))
+      throw new Error(
+        errorData.detail || `Failed to optimize multi-day maintenance plan (${res.status})`
+      )
+    }
+
+    return res.json()
+  } catch (err: any) {
+    clearTimeout(timer)
+    if (err.name === 'AbortError') {
+      throw new Error(
+        'Optimization request timed out. The OR-Tools CP-SAT multi-day solver is taking longer than expected. Please retry calculation.'
+      )
+    }
+    throw err
+  }
 }
 
 export async function applyMaintenancePlan(

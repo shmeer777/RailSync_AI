@@ -14,6 +14,7 @@ OR-Tools CP-SAT while extending existing RailSync AI capabilities:
 """
 
 from datetime import datetime, date, timedelta, timezone
+import time
 from typing import Any
 import uuid
 
@@ -45,12 +46,17 @@ from app.services.ai.urgency_analyzer import calculate_all_urgencies
 # In-memory plan cache for review before applying
 PLAN_CACHE: dict[str, dict[str, Any]] = {}
 
+# In-memory result cache for plan responses (60s TTL)
+_MAINTENANCE_PLAN_CACHE: dict[str, dict[str, Any]] = {}
+_PLAN_CACHE_TTL_SECONDS = 60
+
 
 def generate_maintenance_plan(
     db: Session,
     request: MaintenancePlanOptimizeRequest | None = None,
     horizon: str | None = None,
     start_date: str | None = None,
+    force_refresh: bool = False,
 ) -> MaintenancePlanResponse:
     """
     Generates an optimized weekly or monthly maintenance plan using OR-Tools CP-SAT.
@@ -77,6 +83,19 @@ def generate_maintenance_plan(
     else:
         start_d = datetime.now().date()
 
+    # Check in-memory result cache
+    cache_key = (
+        f"{horizon_type}_{start_d.isoformat()}_"
+        f"{tuple(sorted(request.target_departments or []))}_"
+        f"{tuple(sorted(request.target_blocks or []))}"
+    )
+    is_sqlite_test = "sqlite" in str(getattr(db.bind, "url", ""))
+
+    if not force_refresh and not is_sqlite_test and cache_key in _MAINTENANCE_PLAN_CACHE:
+        entry = _MAINTENANCE_PLAN_CACHE[cache_key]
+        if (time.time() - entry["timestamp"]) < _PLAN_CACHE_TTL_SECONDS:
+            return entry["response"]
+
     # 1. Fetch DB records
     blocks = db.scalars(select(Block).order_by(Block.id)).all()
     block_map = {_normalize_code(b.code): b for b in blocks}
@@ -100,12 +119,18 @@ def generate_maintenance_plan(
 
     # If no tasks, return empty plan
     if not tasks:
-        return _build_empty_plan_response(
+        empty_res = _build_empty_plan_response(
             horizon=horizon_type,
             start_d=start_d,
             num_days=num_days,
             total_assets=total_network_assets,
         )
+        if not is_sqlite_test:
+            _MAINTENANCE_PLAN_CACHE[cache_key] = {
+                "timestamp": time.time(),
+                "response": empty_res,
+            }
+        return empty_res
 
     # 2. Compute Urgencies for all tasks
     urgency_res = calculate_all_urgencies(db=db, target_ids=[t.id for t in tasks])
@@ -405,6 +430,12 @@ def generate_maintenance_plan(
         "response": response,
         "tasks": tasks,
     }
+
+    if not is_sqlite_test:
+        _MAINTENANCE_PLAN_CACHE[cache_key] = {
+            "timestamp": time.time(),
+            "response": response,
+        }
 
     return response
 

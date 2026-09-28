@@ -779,12 +779,13 @@ from app.schemas.planning import (
 def get_weekly_or_monthly_plan(
     horizon: str = "week",
     start_date: str | None = None,
+    force_refresh: bool = False,
     db: Session = Depends(get_db),
 ):
     from app.services.ai.maintenance_planner import generate_maintenance_plan
 
     req = MaintenancePlanOptimizeRequest(horizon=horizon, start_date=start_date)
-    return generate_maintenance_plan(db=db, request=req)
+    return generate_maintenance_plan(db=db, request=req, force_refresh=force_refresh)
 
 
 @router.post(
@@ -799,7 +800,7 @@ def optimize_multi_day_plan(
 ):
     from app.services.ai.maintenance_planner import generate_maintenance_plan
 
-    return generate_maintenance_plan(db=db, request=payload)
+    return generate_maintenance_plan(db=db, request=payload, force_refresh=True)
 
 
 @router.post(

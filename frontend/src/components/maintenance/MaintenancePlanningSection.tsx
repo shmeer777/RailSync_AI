@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import {
   AlertTriangle,
@@ -45,6 +45,9 @@ export default function MaintenancePlanningSection({
   const [loading, setLoading] = useState(true)
   const [optimizing, setOptimizing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [isSlow, setIsSlow] = useState(false)
+  const [isVerySlow, setIsVerySlow] = useState(false)
+  const requestIdRef = useRef(0)
 
   // Inspection modal
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null)
@@ -57,26 +60,38 @@ export default function MaintenancePlanningSection({
   const [applySuccess, setApplySuccess] = useState<string | null>(null)
 
   const loadPlan = useCallback(async (isRefresh = false) => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
-    try {
-      if (isRefresh) setOptimizing(true);
-      else setLoading(true);
-      setError(null);
-      setApplySuccess(null);
+    const curId = ++requestIdRef.current
+    setIsSlow(false)
+    setIsVerySlow(false)
 
-      const res = await fetchMaintenancePlan(horizon, startDate, { signal: controller.signal });
-      setPlan(res);
+    const slowTimer = setTimeout(() => {
+      if (requestIdRef.current === curId) setIsSlow(true)
+    }, 3500)
+    const verySlowTimer = setTimeout(() => {
+      if (requestIdRef.current === curId) setIsVerySlow(true)
+    }, 12000)
+
+    try {
+      if (isRefresh) setOptimizing(true)
+      else setLoading(true)
+      setError(null)
+      setApplySuccess(null)
+
+      const res = await fetchMaintenancePlan(horizon, startDate, isRefresh)
+      if (requestIdRef.current === curId) {
+        setPlan(res)
+      }
     } catch (err: any) {
-      if (err.name === 'AbortError') {
-        setError('Request timed out while fetching maintenance plan.');
-      } else {
-        setError(err.message || 'Failed to load maintenance plan.');
+      if (requestIdRef.current === curId) {
+        setError(err.message || 'Unable to generate the maintenance plan.')
       }
     } finally {
-      clearTimeout(timeoutId);
-      setLoading(false);
-      setOptimizing(false);
+      clearTimeout(slowTimer)
+      clearTimeout(verySlowTimer)
+      if (requestIdRef.current === curId) {
+        setLoading(false)
+        setOptimizing(false)
+      }
     }
   }, [horizon, startDate])
 
@@ -85,29 +100,29 @@ export default function MaintenancePlanningSection({
   }, [loadPlan])
 
   const handleReoptimize = async () => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+    const curId = ++requestIdRef.current
     try {
-      setOptimizing(true);
-      setError(null);
-      setApplySuccess(null);
+      setOptimizing(true)
+      setError(null)
+      setApplySuccess(null)
 
       const payload = {
         horizon,
         start_date: startDate,
         target_departments: selectedDept !== 'all' ? [selectedDept] : null,
-      };
-      const res = await optimizeMaintenancePlan(payload, { signal: controller.signal });
-      setPlan(res);
+      }
+      const res = await optimizeMaintenancePlan(payload)
+      if (requestIdRef.current === curId) {
+        setPlan(res)
+      }
     } catch (err: any) {
-      if (err.name === 'AbortError') {
-        setError('Request timed out while optimizing maintenance plan.');
-      } else {
-        setError(err.message || 'Failed to optimize maintenance plan.');
+      if (requestIdRef.current === curId) {
+        setError(err.message || 'Unable to generate the maintenance plan.')
       }
     } finally {
-      clearTimeout(timeoutId);
-      setOptimizing(false);
+      if (requestIdRef.current === curId) {
+        setOptimizing(false)
+      }
     }
   }
 
@@ -207,17 +222,39 @@ export default function MaintenancePlanningSection({
           alignItems: 'center',
           justifyContent: 'center',
           padding: '80px 20px',
-          background: 'var(--bg-card, #FFFFFF)',
+          background: 'var(--bg-card, #151719)',
           borderRadius: '12px',
-          border: '1px solid var(--border-light, #D9E1E8)',
-          color: 'var(--text-secondary, #5B6B79)',
-          gap: '12px',
+          border: '1px solid var(--border-light, #2A2D32)',
+          color: 'var(--text-secondary, #B9BDC4)',
+          gap: '14px',
+          textAlign: 'center',
         }}
       >
-        <Loader2 size={32} style={{ animation: 'spin 1s linear infinite', color: '#1F6AA5' }} />
-        <span style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary, #172B3A)' }}>
-          Generating Multi-Day Maintenance Schedule via OR-Tools CP-SAT...
-        </span>
+        <Loader2 size={34} style={{ animation: 'spin 1s linear infinite', color: '#3B82F6' }} />
+        <div>
+          <span style={{ fontSize: '15px', fontWeight: 700, color: 'var(--text-primary, #F5F5F5)', display: 'block' }}>
+            Generating Multi-Day Maintenance Schedule via OR-Tools CP-SAT...
+          </span>
+          <p style={{ margin: '6px 0 0', fontSize: '13px', color: 'var(--text-secondary, #9CA3AF)', maxWidth: '540px' }}>
+            {isVerySlow
+              ? 'Multi-day constraint evaluation is taking longer than expected. Solving crew non-overlap, inter-task dependencies, and route traffic across 75 blocks...'
+              : isSlow
+                ? 'OR-Tools CP-SAT is evaluating multi-block possession windows, train conflicts, and crew capacity constraints...'
+                : 'Solving constraint programming model for maximum operational throughput.'}
+          </p>
+        </div>
+
+        {isVerySlow && (
+          <button
+            type="button"
+            onClick={() => void loadPlan(true)}
+            className="enterprise-btn-secondary"
+            style={{ marginTop: '8px', height: '32px', padding: '0 14px', fontSize: '12px' }}
+          >
+            <RefreshCw size={13} />
+            Retry Calculation
+          </button>
+        )}
         <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
       </div>
     )
@@ -232,31 +269,75 @@ export default function MaintenancePlanningSection({
           alignItems: 'center',
           justifyContent: 'center',
           padding: '60px 20px',
-          background: 'var(--bg-card, #FFFFFF)',
+          background: 'var(--bg-card, #151719)',
           borderRadius: '12px',
-          border: '1px solid #FECACA',
-          color: '#DC2626',
+          border: '1px solid #7F1D1D',
+          color: '#F87171',
           gap: '14px',
           textAlign: 'center',
         }}
       >
-        <AlertTriangle size={36} color="#DC2626" />
+        <AlertTriangle size={36} color="#EF4444" />
         <div>
-          <h3 style={{ margin: '0 0 6px', fontSize: '16px', fontWeight: 700, color: '#991B1B' }}>
-            Unable to Generate Maintenance Schedule
+          <h3 style={{ margin: '0 0 6px', fontSize: '16px', fontWeight: 700, color: '#FCA5A5' }}>
+            Unable to generate the maintenance plan.
           </h3>
-          <p style={{ margin: 0, fontSize: '13px', color: '#B91C1C', maxWidth: '520px' }}>
+          <p style={{ margin: 0, fontSize: '13px', color: '#F87171', maxWidth: '520px' }}>
             {error}
           </p>
         </div>
         <button
           type="button"
-          onClick={() => void loadPlan()}
-          className="btn-primary-railway"
-          style={{ padding: '8px 18px', fontSize: '13px' }}
+          onClick={() => void loadPlan(true)}
+          className="enterprise-btn-primary"
+          style={{ height: '34px', padding: '0 18px', fontSize: '12.5px' }}
         >
           <RefreshCw size={14} />
-          Retry Schedule Optimization
+          Retry Calculation
+        </button>
+      </div>
+    )
+  }
+
+  const hasMaintenanceData =
+    Boolean(plan) &&
+    (plan?.total_tasks_planned ?? 0) > 0 &&
+    allScheduledTasks.length > 0
+
+  if (!hasMaintenanceData && plan && !loading) {
+    return (
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '60px 20px',
+          background: 'var(--bg-card, #151719)',
+          borderRadius: '12px',
+          border: '1px solid var(--border-light, #2A2D32)',
+          color: 'var(--text-secondary, #B9BDC4)',
+          gap: '14px',
+          textAlign: 'center',
+        }}
+      >
+        <CheckCircle2 size={36} color="#10B981" />
+        <div>
+          <h3 style={{ margin: '0 0 6px', fontSize: '16px', fontWeight: 700, color: 'var(--text-primary, #F5F5F5)' }}>
+            No maintenance data is available for multi-day planning.
+          </h3>
+          <p style={{ margin: 0, fontSize: '13px', color: 'var(--text-secondary, #B9BDC4)', maxWidth: '520px' }}>
+            All network blocks and operational assets are currently 100% available with zero scheduled maintenance tasks for the selected {horizon === 'week' ? '7-day' : '30-day'} planning horizon.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void loadPlan(true)}
+          className="enterprise-btn-secondary"
+          style={{ height: '34px', padding: '0 16px', fontSize: '12.5px' }}
+        >
+          <RefreshCw size={14} />
+          Refresh Schedule
         </button>
       </div>
     )
