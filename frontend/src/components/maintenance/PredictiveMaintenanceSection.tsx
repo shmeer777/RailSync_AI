@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import {
   AlertTriangle,
   BarChart3,
@@ -23,6 +23,17 @@ interface PredictiveMaintenanceSectionProps {
   onPlanSuccess?: () => void
 }
 
+const isAllAssets = (val?: string | null): boolean => {
+  if (!val) return true
+  const trimmed = val.trim().toLowerCase()
+  return (
+    trimmed === 'all' ||
+    trimmed === 'all assets' ||
+    trimmed === 'all_assets' ||
+    trimmed === ''
+  )
+}
+
 export default function PredictiveMaintenanceSection({
   blocks = [],
   onPlanSuccess,
@@ -32,6 +43,9 @@ export default function PredictiveMaintenanceSection({
   const [selectedPredictionCode, setSelectedPredictionCode] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+
+  const requestIdRef = useRef(0)
+  const allPredictionsCacheRef = useRef<MaintenancePrediction[]>([])
 
   // Model Metrics Modal
   const [showMetricsModal, setShowMetricsModal] = useState(false)
@@ -46,28 +60,78 @@ export default function PredictiveMaintenanceSection({
   const [planSuccess, setPlanSuccess] = useState<string | null>(null)
   const [planError, setPlanError] = useState<string | null>(null)
 
-  const loadPredictions = async (blockCode?: string) => {
+  const loadPredictions = async (blockCode?: string, forceRefresh = false) => {
+    const isAll = isAllAssets(blockCode)
+    const currentRequestId = ++requestIdRef.current
+
+    // If "All Assets" is requested and in-memory cache is present and refresh not forced, restore instantly
+    if (isAll && allPredictionsCacheRef.current.length > 0 && !forceRefresh) {
+      setPredictions(allPredictionsCacheRef.current)
+      setLoading(false)
+      setError(null)
+      setSelectedPredictionCode((prev) => {
+        if (prev && allPredictionsCacheRef.current.some((p) => p.block_code === prev)) {
+          return prev
+        }
+        return allPredictionsCacheRef.current[0]?.block_code || null
+      })
+      return
+    }
+
     setLoading(true)
     setError(null)
+
     try {
-      const data = await fetchMaintenancePredictions(blockCode)
-      const list = data.predictions || []
+      const codeToFetch = isAll ? undefined : blockCode?.trim()
+      const data = await fetchMaintenancePredictions(codeToFetch)
+
+      // Prevent race conditions: ignore response if a newer request was dispatched
+      if (currentRequestId !== requestIdRef.current) {
+        return
+      }
+
+      const list = Array.isArray(data?.predictions) ? data.predictions : []
+
+      if (isAll) {
+        allPredictionsCacheRef.current = list
+      }
+
       setPredictions(list)
+
       if (list.length > 0) {
-        setSelectedPredictionCode((prev) => (prev && list.some(p => p.block_code === prev) ? prev : list[0].block_code))
+        setSelectedPredictionCode((prev) => {
+          if (prev && list.some((p) => p.block_code === prev)) {
+            return prev
+          }
+          return list[0].block_code
+        })
       } else {
         setSelectedPredictionCode(null)
       }
     } catch (err: any) {
-      setError(err.message || 'Failed to load predictive maintenance insights.')
+      if (currentRequestId === requestIdRef.current) {
+        setError(err.message || 'Failed to load predictive maintenance insights.')
+      }
     } finally {
-      setLoading(false)
+      if (currentRequestId === requestIdRef.current) {
+        setLoading(false)
+      }
     }
   }
 
   useEffect(() => {
-    void loadPredictions(selectedBlock === 'ALL' ? undefined : selectedBlock)
+    void loadPredictions(selectedBlock)
   }, [selectedBlock])
+
+  const displayedPredictions = useMemo(() => {
+    if (isAllAssets(selectedBlock)) {
+      return predictions
+    }
+    const filtered = predictions.filter(
+      (p) => p.block_code?.toLowerCase() === selectedBlock.trim().toLowerCase()
+    )
+    return filtered.length > 0 ? filtered : predictions
+  }, [predictions, selectedBlock])
 
   const handleOpenMetrics = async () => {
     setShowMetricsModal(true)
@@ -129,7 +193,10 @@ export default function PredictiveMaintenanceSection({
   }
 
   const activePrediction =
-    predictions.find((p) => p.block_code === selectedPredictionCode) || predictions[0] || null
+    predictions.find((p) => p.block_code === selectedPredictionCode) ||
+    displayedPredictions[0] ||
+    predictions[0] ||
+    null
 
   return (
     <section id="predictive-maintenance-section" className="enterprise-container" style={{ marginBottom: '24px' }}>
@@ -182,7 +249,7 @@ export default function PredictiveMaintenanceSection({
           {/* Refresh Button */}
           <button
             type="button"
-            onClick={() => void loadPredictions(selectedBlock === 'ALL' ? undefined : selectedBlock)}
+            onClick={() => void loadPredictions(selectedBlock, true)}
             disabled={loading}
             className="enterprise-btn-primary"
           >
@@ -204,11 +271,23 @@ export default function PredictiveMaintenanceSection({
             fontSize: '12px',
             display: 'flex',
             alignItems: 'center',
-            gap: '8px',
+            justifyContent: 'space-between',
+            gap: '12px',
           }}
         >
-          <AlertTriangle size={16} />
-          {error}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <AlertTriangle size={16} />
+            <span>{error}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => void loadPredictions(selectedBlock, true)}
+            className="enterprise-btn-secondary"
+            style={{ height: '28px', padding: '0 10px', fontSize: '11.5px', whiteSpace: 'nowrap' }}
+          >
+            <RefreshCw size={12} />
+            Retry
+          </button>
         </div>
       )}
 
@@ -219,7 +298,7 @@ export default function PredictiveMaintenanceSection({
           <div className="enterprise-card-header">
             <h3 className="enterprise-card-title">Predicted Maintenance Tasks</h3>
             <span style={{ fontSize: '12px', color: 'var(--text-secondary, #B9BDC4)', fontWeight: 600 }}>
-              {predictions.length} Tasks Forecasted
+              {displayedPredictions.length} Tasks Forecasted
             </span>
           </div>
 
@@ -243,14 +322,29 @@ export default function PredictiveMaintenanceSection({
                       Loading predictions...
                     </td>
                   </tr>
-                ) : predictions.length === 0 ? (
+                ) : error ? (
                   <tr>
                     <td colSpan={6} style={{ textAlign: 'center', padding: '30px', color: 'var(--text-secondary, #B9BDC4)' }}>
-                      No maintenance risks predicted for this section.
+                      <div style={{ color: '#DC2626', marginBottom: '8px' }}>{error}</div>
+                      <button
+                        type="button"
+                        onClick={() => void loadPredictions(selectedBlock, true)}
+                        className="enterprise-btn-secondary"
+                        style={{ marginTop: '6px', height: '28px', padding: '0 12px', fontSize: '11.5px' }}
+                      >
+                        <RefreshCw size={12} />
+                        Retry
+                      </button>
+                    </td>
+                  </tr>
+                ) : displayedPredictions.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} style={{ textAlign: 'center', padding: '30px', color: 'var(--text-secondary, #B9BDC4)' }}>
+                      No predictions available for the selected asset.
                     </td>
                   </tr>
                 ) : (
-                  predictions.map((pred) => {
+                  displayedPredictions.map((pred) => {
                     const isSelected = selectedPredictionCode === pred.block_code
                     const urgencyClass =
                       pred.urgency === 'Critical'

@@ -279,7 +279,8 @@ export default function MaintenanceBundlesSection({
           style={{
             display: 'flex',
             alignItems: 'center',
-            gap: '8px',
+            justifyContent: 'space-between',
+            gap: '12px',
             padding: '10px 22px',
             background: isDark ? 'rgba(239, 68, 68, 0.15)' : '#FEF2F2',
             borderBottom: isDark ? '1px solid rgba(248, 113, 113, 0.35)' : '1px solid #FECACA',
@@ -288,7 +289,27 @@ export default function MaintenanceBundlesSection({
             fontWeight: 600,
           }}
         >
-          <AlertTriangle size={15} /> {actionError || error}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <AlertTriangle size={15} />
+            <span>{actionError || error}</span>
+          </div>
+          <button
+            type="button"
+            onClick={handleOptimizeClick}
+            disabled={optimizing}
+            style={{
+              padding: '4px 10px',
+              borderRadius: '6px',
+              border: '1px solid #FECACA',
+              background: '#FFFFFF',
+              color: '#991B1B',
+              fontSize: '11px',
+              fontWeight: 700,
+              cursor: 'pointer',
+            }}
+          >
+            Retry Optimization
+          </button>
         </div>
       )}
 

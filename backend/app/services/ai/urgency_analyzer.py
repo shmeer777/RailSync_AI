@@ -380,11 +380,25 @@ def calculate_all_urgencies(
     # Attempt to load ML model predictions for model_confidence
     predictions_map: dict[str, dict[str, Any]] = {}
     try:
-        from app.ml.predictor import predict_maintenance_for_all_blocks
-        preds = predict_maintenance_for_all_blocks(db)
-        for p in preds:
-            b_code = _normalize_code(p.get("block_code"))
-            predictions_map[b_code] = p
+        from app.ml.predictor import (
+            predict_maintenance_for_block,
+            get_cached_all_block_predictions,
+        )
+        cached_preds = get_cached_all_block_predictions()
+        if cached_preds:
+            for p in cached_preds:
+                b_code = _normalize_code(p.get("block_code"))
+                predictions_map[b_code] = p
+        else:
+            # Query prediction only for the specific blocks that have active tasks
+            task_blocks = {_normalize_code(t.block_code) for t in all_tasks if t.block_code}
+            for b_code in task_blocks:
+                try:
+                    p = predict_maintenance_for_block(db, b_code)
+                    if p:
+                        predictions_map[b_code] = p
+                except Exception:
+                    pass
     except Exception:
         # Predictive ML model may be uninitialized or training
         predictions_map = {}

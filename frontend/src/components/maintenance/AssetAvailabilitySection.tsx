@@ -109,6 +109,45 @@ export default function AssetAvailabilitySection({
     )
   }
 
+  if (error && !data) {
+    return (
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '60px 20px',
+          background: 'var(--bg-card, #FFFFFF)',
+          borderRadius: '12px',
+          border: '1px solid #FECACA',
+          color: '#DC2626',
+          gap: '14px',
+          textAlign: 'center',
+        }}
+      >
+        <AlertTriangle size={36} color="#DC2626" />
+        <div>
+          <h3 style={{ margin: '0 0 6px', fontSize: '16px', fontWeight: 700, color: '#991B1B' }}>
+            Unable to Calculate Asset Availability
+          </h3>
+          <p style={{ margin: 0, fontSize: '13px', color: '#B91C1C', maxWidth: '500px' }}>
+            {error}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void loadAvailability()}
+          className="btn-primary-railway"
+          style={{ padding: '8px 18px', fontSize: '13px' }}
+        >
+          <RefreshCw size={14} />
+          Retry Calculation
+        </button>
+      </div>
+    )
+  }
+
   const baseline = data?.baseline
   const optimized = data?.optimized
   const impact = data?.impact

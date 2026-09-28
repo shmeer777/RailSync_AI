@@ -247,22 +247,27 @@ export async function fetchBundleImpact(bundleId: string): Promise<MaintenanceIm
 
 export async function fetchMaintenancePlan(
   horizon: 'week' | 'month' = 'week',
-  startDate?: string | null
+  startDate?: string | null,
+  init?: RequestInit
 ): Promise<MaintenancePlanResponse> {
   const params = new URLSearchParams({ horizon })
   if (startDate) params.set('start_date', startDate)
-  const res = await fetch(`${API_BASE_URL}/ai/maintenance-plan?${params.toString()}`)
+  const res = await fetch(`${API_BASE_URL}/ai/maintenance-plan?${params.toString()}`, {
+    ...init,
+  })
   if (!res.ok) throw new Error('Failed to fetch maintenance plan.')
   return res.json()
 }
 
 export async function optimizeMaintenancePlan(
-  payload: MaintenancePlanOptimizeRequest
+  payload: MaintenancePlanOptimizeRequest,
+  init?: RequestInit
 ): Promise<MaintenancePlanResponse> {
   const res = await fetch(`${API_BASE_URL}/ai/maintenance-plan/optimize`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+    ...init,
   })
   if (!res.ok) throw new Error('Failed to optimize multi-day maintenance plan.')
   return res.json()

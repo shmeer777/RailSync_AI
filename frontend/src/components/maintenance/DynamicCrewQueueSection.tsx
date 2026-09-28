@@ -135,42 +135,43 @@ export default function DynamicCrewQueueSection({
   const [applyError, setApplyError] = useState('')
 
   // 1. Fetch available crews on mount
-  useEffect(() => {
-    async function loadCrews() {
-      try {
-        setLoading(true)
-        setError('')
-        const res = await fetch(`${API_BASE_URL}/ai/crew-queues`)
-        if (!res.ok) {
-          throw new Error(`Failed to fetch crew queues (${res.status})`)
-        }
-        const data: CrewQueueResponse[] = await res.json()
-        const crewList: Crew[] = data.map((d) => ({
-          id: d.crew_id,
-          name: d.crew_name,
-          crew_type: d.crew_type,
-          department: d.department,
-          capacity: d.capacity,
-          status: d.current_status,
-          current_workload: d.current_workload,
-        }))
-        setCrews(crewList)
-
-        // Default to Electrical Team B or the first crew
-        const defaultCrew =
-          crewList.find((c) => c.name.toLowerCase().includes('electrical team b')) ||
-          crewList[0]
-        if (defaultCrew) {
-          setSelectedCrewId(defaultCrew.id)
-        }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Error loading crews.')
-      } finally {
-        setLoading(false)
+  const loadCrews = useCallback(async () => {
+    try {
+      setLoading(true)
+      setError('')
+      const res = await fetch(`${API_BASE_URL}/ai/crew-queues`)
+      if (!res.ok) {
+        throw new Error(`Failed to fetch crew queues (${res.status})`)
       }
+      const data: CrewQueueResponse[] = await res.json()
+      const crewList: Crew[] = data.map((d) => ({
+        id: d.crew_id,
+        name: d.crew_name,
+        crew_type: d.crew_type,
+        department: d.department,
+        capacity: d.capacity,
+        status: d.current_status,
+        current_workload: d.current_workload,
+      }))
+      setCrews(crewList)
+
+      // Default to Electrical Team B or the first crew
+      const defaultCrew =
+        crewList.find((c) => c.name.toLowerCase().includes('electrical team b')) ||
+        crewList[0]
+      if (defaultCrew) {
+        setSelectedCrewId(defaultCrew.id)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error loading crews.')
+    } finally {
+      setLoading(false)
     }
-    void loadCrews()
   }, [])
+
+  useEffect(() => {
+    void loadCrews()
+  }, [loadCrews])
 
   // 2. Fetch queue data when selected crew changes
   const loadQueueForCrew = useCallback(
@@ -431,7 +432,8 @@ export default function DynamicCrewQueueSection({
           style={{
             display: 'flex',
             alignItems: 'center',
-            gap: '10px',
+            justifyContent: 'space-between',
+            gap: '12px',
             padding: '12px 18px',
             borderRadius: '8px',
             background: isDark ? 'rgba(239, 68, 68, 0.15)' : '#FEF2F2',
@@ -441,8 +443,52 @@ export default function DynamicCrewQueueSection({
             fontWeight: 600,
           }}
         >
-          <AlertTriangle size={18} />
-          {error}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <AlertTriangle size={18} />
+            <span>{error}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              if (selectedCrewId) void loadQueueForCrew(selectedCrewId, true)
+              else void loadCrews()
+            }}
+            className="btn-secondary-white"
+            style={{ padding: '5px 12px', fontSize: '11.5px', whiteSpace: 'nowrap' }}
+          >
+            <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
+            Retry
+          </button>
+        </div>
+      )}
+
+      {loading && !queueData && (
+        <div style={{ textAlign: 'center', padding: '60px 20px', background: 'var(--bg-card, #FFFFFF)', borderRadius: '12px', border: '1px solid var(--border-light, #D9E1E8)' }}>
+          <Loader2 size={32} style={{ animation: 'spin 1s linear infinite', margin: '0 auto 12px', color: '#1F6AA5' }} />
+          <p style={{ margin: 0, fontSize: '13px', color: 'var(--text-secondary, #5B6B79)', fontWeight: 600 }}>
+            Loading dynamic crew work queue...
+          </p>
+        </div>
+      )}
+
+      {!loading && !queueData && !error && (
+        <div style={{ textAlign: 'center', padding: '60px 20px', background: 'var(--bg-card, #FFFFFF)', borderRadius: '12px', border: '1px solid var(--border-light, #D9E1E8)' }}>
+          <Workflow size={36} style={{ margin: '0 auto 12px', opacity: 0.4, color: '#1F6AA5' }} />
+          <h3 style={{ margin: '0 0 6px', color: 'var(--text-primary, #172B3A)', fontSize: '15px' }}>
+            No Crew Queue Loaded
+          </h3>
+          <p style={{ margin: '0 0 16px', fontSize: '12px', color: 'var(--text-secondary, #5B6B79)' }}>
+            Select a maintenance crew above or click Load Crews to fetch available work queues.
+          </p>
+          <button
+            type="button"
+            onClick={() => void loadCrews()}
+            className="btn-primary-railway"
+            style={{ padding: '8px 16px', fontSize: '12px' }}
+          >
+            <RefreshCw size={13} />
+            Load Crews
+          </button>
         </div>
       )}
 

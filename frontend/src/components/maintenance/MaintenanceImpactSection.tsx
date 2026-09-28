@@ -391,9 +391,21 @@ export default function MaintenanceImpactSection({
       </div>
 
       {error && (
-        <div style={{ padding: '12px 16px', borderRadius: '6px', background: 'var(--bg-error, #211416)', border: '1px solid var(--border-error, #6B2A32)', color: 'var(--text-error, #F5A0A8)', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <AlertCircle size={16} />
-          {error}
+        <div style={{ padding: '12px 16px', borderRadius: '6px', background: 'var(--bg-error, #211416)', border: '1px solid var(--border-error, #6B2A32)', color: 'var(--text-error, #F5A0A8)', fontSize: '12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <AlertCircle size={16} />
+            <span>{error}</span>
+          </div>
+          <button
+            type="button"
+            onClick={handleAnalyze}
+            disabled={loading}
+            className="enterprise-btn-secondary"
+            style={{ height: '28px', padding: '0 10px', fontSize: '11.5px', whiteSpace: 'nowrap' }}
+          >
+            <RefreshCw size={12} />
+            Retry Analysis
+          </button>
         </div>
       )}
 

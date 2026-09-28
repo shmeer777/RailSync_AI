@@ -429,10 +429,32 @@ def predict_maintenance_for_block(
     }
 
 
-def predict_maintenance_for_all_blocks(db: Session) -> list[dict]:
+_ALL_PREDICTIONS_CACHE: list[dict] | None = None
+_ALL_PREDICTIONS_CACHE_TIME: float = 0.0
+_PREDICTIONS_CACHE_TTL: float = 120.0  # 2 minutes TTL
+
+
+def get_cached_all_block_predictions() -> list[dict] | None:
+    global _ALL_PREDICTIONS_CACHE, _ALL_PREDICTIONS_CACHE_TIME
+    import time
+    if _ALL_PREDICTIONS_CACHE is not None and (time.time() - _ALL_PREDICTIONS_CACHE_TIME) < _PREDICTIONS_CACHE_TTL:
+        return _ALL_PREDICTIONS_CACHE
+    return None
+
+
+def predict_maintenance_for_all_blocks(db: Session, force_refresh: bool = False) -> list[dict]:
     """
-    Generates predictions for all blocks in the database efficiently.
+    Generates predictions for all blocks in the database efficiently,
+    caching the result for 120s to prevent redundant SHAP/inference computations.
     """
+    global _ALL_PREDICTIONS_CACHE, _ALL_PREDICTIONS_CACHE_TIME
+    import time
+
+    if not force_refresh:
+        cached = get_cached_all_block_predictions()
+        if cached is not None:
+            return cached
+
     from app.services.ai.conflict_detection import detect_train_block_conflicts
     from app.services.ai.traffic_estimator import get_all_blocks_traffic
     from app.models.train import Train
@@ -466,4 +488,8 @@ def predict_maintenance_for_all_blocks(db: Session) -> list[dict]:
             cached_model_and_metrics=model_and_metrics,
         )
         results.append(pred)
+
+    _ALL_PREDICTIONS_CACHE = results
+    _ALL_PREDICTIONS_CACHE_TIME = time.time()
     return results
+

@@ -401,12 +401,23 @@ export default function TrainsPage({ onNavigate }: { onNavigate?: (page: string)
         </header>
 
         {error && (
-          <div className="flex items-start gap-3 rounded-xl border border-rose-400/20 bg-rose-400/10 p-4 text-sm text-rose-200">
-            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
-            <div>
-              <p className="font-medium">Unable to load train data</p>
-              <p className="mt-1 text-rose-200/70">{error}</p>
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-rose-400/20 bg-rose-400/10 p-4 text-sm text-rose-200">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-rose-400" />
+              <div>
+                <p className="font-medium text-rose-300">Unable to load train data</p>
+                <p className="mt-1 text-rose-200/80">{error}</p>
+              </div>
             </div>
+            <button
+              type="button"
+              onClick={() => void loadData(true)}
+              className="btn-secondary-white shrink-0"
+              style={{ padding: '6px 14px', fontSize: '12px' }}
+            >
+              <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
+              Retry Connection
+            </button>
           </div>
         )}
 
@@ -552,13 +563,26 @@ export default function TrainsPage({ onNavigate }: { onNavigate?: (page: string)
             <div className="flex min-h-64 flex-col items-center justify-center px-6 text-center">
               <TrainFront className="h-10 w-10 text-slate-400" />
               <h3 className="mt-3 text-sm font-semibold text-[#172B3A]">
-                No trains found
+                {error ? 'Unable to display trains' : 'No trains found'}
               </h3>
               <p className="mt-1 max-w-md text-xs text-[#5B6773]">
-                {trains.length === 0
-                  ? 'Add a train to begin monitoring railway operations.'
+                {error
+                  ? error
+                  : trains.length === 0
+                  ? 'Add a train or refresh from backend to begin monitoring railway operations.'
                   : 'Try changing your search or status filter.'}
               </p>
+              <div className="mt-3 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => void loadData()}
+                  className="btn-primary-railway"
+                  style={{ padding: '6px 14px', fontSize: '12px' }}
+                >
+                  <RefreshCw size={13} />
+                  Reload Trains
+                </button>
+              </div>
             </div>
           ) : (
             <div className="overflow-x-auto">

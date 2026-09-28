@@ -845,20 +845,30 @@ export default function Maintenance({ initialTab }: MaintenanceProps = {}) {
           style={{
             display: 'flex',
             alignItems: 'center',
-            gap: '9px',
+            justifyContent: 'space-between',
+            gap: '12px',
             marginBottom: '15px',
-            padding: '11px 13px',
-            border:
-              '1px solid rgba(255,85,117,.3)',
+            padding: '11px 16px',
+            border: '1px solid rgba(255,85,117,.3)',
             borderRadius: '9px',
-            background:
-              'rgba(255,85,117,.07)',
-            color: '#ff8298',
-            fontSize: '11px',
+            background: 'rgba(255,85,117,.07)',
+            color: '#DC2626',
+            fontSize: '12px',
           }}
         >
-          <AlertTriangle size={16} />
-          {error}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <AlertTriangle size={16} />
+            <span>{error}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => void loadData(true)}
+            className="btn-secondary-white"
+            style={{ padding: '5px 12px', fontSize: '11.5px', whiteSpace: 'nowrap' }}
+          >
+            <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
+            Retry
+          </button>
         </div>
       )}
       {/* MAINTENANCE HUB SELECTOR TABS */}
@@ -1164,7 +1174,9 @@ export default function Maintenance({ initialTab }: MaintenanceProps = {}) {
                       fontSize: '16px',
                     }}
                   >
-                    {search
+                    {error
+                      ? 'Unable to load maintenance records'
+                      : search
                       ? 'No maintenance matches found'
                       : 'No maintenance scheduled'}
                   </h3>
@@ -1176,12 +1188,24 @@ export default function Maintenance({ initialTab }: MaintenanceProps = {}) {
                       fontSize: '11px',
                     }}
                   >
-                    {search
+                    {error
+                      ? error
+                      : search
                       ? 'Try a different search term.'
                       : 'Create the first maintenance task for a railway block or station.'}
                   </p>
 
-                  {!search && (
+                  {error ? (
+                    <button
+                      type="button"
+                      onClick={() => void loadData(true)}
+                      className="btn-primary-railway"
+                      style={{ padding: '8px 16px', fontSize: '12px' }}
+                    >
+                      <RefreshCw size={13} />
+                      Retry Loading Records
+                    </button>
+                  ) : !search && (
                     <button
                       type="button"
                       onClick={() => {

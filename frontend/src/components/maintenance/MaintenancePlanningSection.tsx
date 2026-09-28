@@ -57,19 +57,26 @@ export default function MaintenancePlanningSection({
   const [applySuccess, setApplySuccess] = useState<string | null>(null)
 
   const loadPlan = useCallback(async (isRefresh = false) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
     try {
-      if (isRefresh) setOptimizing(true)
-      else setLoading(true)
-      setError(null)
-      setApplySuccess(null)
+      if (isRefresh) setOptimizing(true);
+      else setLoading(true);
+      setError(null);
+      setApplySuccess(null);
 
-      const res = await fetchMaintenancePlan(horizon, startDate)
-      setPlan(res)
+      const res = await fetchMaintenancePlan(horizon, startDate, { signal: controller.signal });
+      setPlan(res);
     } catch (err: any) {
-      setError(err.message || 'Failed to load maintenance plan.')
+      if (err.name === 'AbortError') {
+        setError('Request timed out while fetching maintenance plan.');
+      } else {
+        setError(err.message || 'Failed to load maintenance plan.');
+      }
     } finally {
-      setLoading(false)
-      setOptimizing(false)
+      clearTimeout(timeoutId);
+      setLoading(false);
+      setOptimizing(false);
     }
   }, [horizon, startDate])
 
@@ -78,22 +85,29 @@ export default function MaintenancePlanningSection({
   }, [loadPlan])
 
   const handleReoptimize = async () => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
     try {
-      setOptimizing(true)
-      setError(null)
-      setApplySuccess(null)
+      setOptimizing(true);
+      setError(null);
+      setApplySuccess(null);
 
       const payload = {
         horizon,
         start_date: startDate,
         target_departments: selectedDept !== 'all' ? [selectedDept] : null,
-      }
-      const res = await optimizeMaintenancePlan(payload)
-      setPlan(res)
+      };
+      const res = await optimizeMaintenancePlan(payload, { signal: controller.signal });
+      setPlan(res);
     } catch (err: any) {
-      setError(err.message || 'Failed to optimize maintenance plan.')
+      if (err.name === 'AbortError') {
+        setError('Request timed out while optimizing maintenance plan.');
+      } else {
+        setError(err.message || 'Failed to optimize maintenance plan.');
+      }
     } finally {
-      setOptimizing(false)
+      clearTimeout(timeoutId);
+      setOptimizing(false);
     }
   }
 
@@ -205,6 +219,45 @@ export default function MaintenancePlanningSection({
           Generating Multi-Day Maintenance Schedule via OR-Tools CP-SAT...
         </span>
         <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+      </div>
+    )
+  }
+
+  if (error && !plan) {
+    return (
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '60px 20px',
+          background: 'var(--bg-card, #FFFFFF)',
+          borderRadius: '12px',
+          border: '1px solid #FECACA',
+          color: '#DC2626',
+          gap: '14px',
+          textAlign: 'center',
+        }}
+      >
+        <AlertTriangle size={36} color="#DC2626" />
+        <div>
+          <h3 style={{ margin: '0 0 6px', fontSize: '16px', fontWeight: 700, color: '#991B1B' }}>
+            Unable to Generate Maintenance Schedule
+          </h3>
+          <p style={{ margin: 0, fontSize: '13px', color: '#B91C1C', maxWidth: '520px' }}>
+            {error}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void loadPlan()}
+          className="btn-primary-railway"
+          style={{ padding: '8px 18px', fontSize: '13px' }}
+        >
+          <RefreshCw size={14} />
+          Retry Schedule Optimization
+        </button>
       </div>
     )
   }

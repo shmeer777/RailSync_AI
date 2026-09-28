@@ -376,17 +376,29 @@ export default function UrgencyPrioritySection() {
           style={{
             display: 'flex',
             alignItems: 'center',
-            gap: '10px',
-            padding: '12px 16px',
+            justifyContent: 'space-between',
+            gap: '12px',
+            padding: '12px 18px',
             borderRadius: '10px',
             background: 'rgba(239, 68, 68, 0.12)',
             border: '1px solid rgba(239, 68, 68, 0.3)',
-            color: '#f87171',
+            color: '#dc2626',
             fontSize: '13px',
           }}
         >
-          <AlertCircle size={18} />
-          {error}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <AlertCircle size={18} />
+            <span>{error}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => void fetchData(true)}
+            className="btn-secondary-white"
+            style={{ padding: '5px 12px', fontSize: '11.5px', whiteSpace: 'nowrap' }}
+          >
+            <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
+            Retry
+          </button>
         </div>
       )}
 
@@ -711,7 +723,18 @@ export default function UrgencyPrioritySection() {
               ) : filteredItems.length === 0 ? (
                 <tr>
                   <td colSpan={9} style={{ padding: '36px', textAlign: 'center', color: '#68899a' }}>
-                    No maintenance tasks match the selected criteria.
+                    <div>{error ? error : 'No maintenance tasks match the selected criteria.'}</div>
+                    {error && (
+                      <button
+                        type="button"
+                        onClick={() => void fetchData(true)}
+                        className="btn-primary-railway"
+                        style={{ marginTop: '10px', padding: '6px 14px', fontSize: '12px' }}
+                      >
+                        <RefreshCw size={13} />
+                        Retry Loading Urgencies
+                      </button>
+                    )}
                   </td>
                 </tr>
               ) : (

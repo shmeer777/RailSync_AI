@@ -96,8 +96,15 @@ export async function fetchMaintenancePredictions(
   blockCode?: string
 ): Promise<PredictionsApiResponse> {
   const url = new URL(`${API_BASE_URL}/ai/maintenance-predictions`)
-  if (blockCode && blockCode !== 'ALL') {
-    url.searchParams.set('block_code', blockCode)
+  const isAll =
+    !blockCode ||
+    blockCode === 'ALL' ||
+    blockCode === 'all' ||
+    blockCode === 'All Assets' ||
+    blockCode.toLowerCase() === 'all' ||
+    blockCode.toLowerCase() === 'all assets'
+  if (!isAll) {
+    url.searchParams.set('block_code', blockCode.trim())
   }
 
   const res = await fetch(url.toString())

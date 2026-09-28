@@ -412,10 +412,10 @@ def analyze_task_impact(
     # 9. Predictive Maintenance Origin
     pred_origin: dict[str, Any] | None = None
     try:
-        from app.ml.predictor import predict_maintenance_for_all_blocks
-        preds = predict_maintenance_for_all_blocks(db)
-        for p in preds:
-            if _normalize_code(p.get("block_code")) == norm_block and p.get("predicted_maintenance") == task.maintenance_type:
+        if norm_block:
+            from app.ml.predictor import predict_maintenance_for_block
+            p = predict_maintenance_for_block(db, norm_block)
+            if p and p.get("predicted_maintenance") == task.maintenance_type:
                 pred_origin = {
                     "is_predicted": True,
                     "model_source": "Predictive Maintenance Service",
@@ -424,7 +424,6 @@ def analyze_task_impact(
                     "predicted_anomaly": p.get("predicted_anomaly") or "Degradation detected",
                     "notice": "Predicted maintenance provides operational context; impact is modeled from real block/train schedules.",
                 }
-                break
     except Exception:
         pred_origin = None
 
