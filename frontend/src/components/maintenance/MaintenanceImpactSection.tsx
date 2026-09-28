@@ -1,8 +1,13 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
   AlertCircle,
+  Building,
+  CheckCircle2,
+  Info,
   RefreshCw,
   Search,
+  ShieldAlert,
+  ShieldCheck,
 } from 'lucide-react'
 import { API_BASE_URL } from '../../lib/api'
 
@@ -77,14 +82,20 @@ interface TrainConflictItem {
   train_id?: number | null
   train_number: string
   train_name: string
+  train_type?: string | null
+  source_station?: string | null
+  destination_station?: string | null
   current_station?: string | null
+  direction?: string | null
   affected_block: string
   conflict_type: string
   priority?: string | null
+  status?: string | null
   eta_minute: number
   depart_minute: number
+  delay_minutes?: number | null
   conflict_severity: string
-  recommendation: string
+  recommendation?: string | null
 }
 
 interface CrewMemberImpact {
@@ -95,7 +106,11 @@ interface CrewMemberImpact {
   required_crew_size: number
   available_capacity: number
   tasks_assigned_count: number
-  workload_notes?: string
+  assigned_task_ids?: number[]
+  location?: string | null
+  availability?: string | null
+  scheduled_window?: string | null
+  workload_notes?: string | null
 }
 
 interface DependencyLink {
@@ -104,6 +119,67 @@ interface DependencyLink {
   dependent_id: number
   dependent_title?: string | null
   relation_type: string
+}
+
+interface SpeedRestrictionItem {
+  block_code: string
+  section_name: string
+  restriction_speed_kmph: number
+  normal_speed_kmph: number
+  restriction_window: string
+  reason: string
+  affected_trains_count: number
+}
+
+interface PowerBlockItem {
+  location: string
+  power_block_type: string
+  window: string
+  department: string
+  affected_assets: string
+  operational_effect: string
+}
+
+interface SignallingImpactItem {
+  signalling_asset: string
+  location: string
+  restriction: string
+  window: string
+  dependent_maintenance: string
+  operational_effect: string
+}
+
+interface DepartmentImpactItem {
+  department: string
+  task_count: number
+  crews_involved: string[]
+  affected_assets: string[]
+  planned_window: string
+  coordination_requirement: string
+}
+
+interface RestrictedAssetItem {
+  asset_code: string
+  asset_name: string
+  asset_type: string
+  restriction_type: string
+  restriction_window: string
+  reason: string
+  status: string
+  affected_operations: string
+}
+
+interface BaselineVsOptimized {
+  affected_trains_before?: number | null
+  affected_trains_after?: number | null
+  train_conflicts_before?: number | null
+  train_conflicts_after?: number | null
+  restricted_blocks_before?: number | null
+  restricted_blocks_after?: number | null
+  available_assets_before?: number | null
+  available_assets_after?: number | null
+  maintenance_duration_before?: number | null
+  maintenance_duration_after?: number | null
 }
 
 interface MaintenanceImpactResponse {
@@ -150,14 +226,25 @@ interface MaintenanceImpactResponse {
     prerequisite_tasks_count: number
     blocks_downstream: boolean
     downstream_tasks_count: number
+    dependency_notes: string[]
     dependency_chain: DependencyLink[]
   }
   asset_impact: {
     total_network_assets: number
-    restricted_assets_count: number
-    available_assets_count: number
+    restricted_assets: number
+    available_assets: number
     availability_percentage: number
-    affected_asset_types: string[]
+    baseline_availability_percentage?: number
+    availability_delta?: number
+    note?: string | null
+  }
+  traffic_impact: {
+    overall_traffic_level: string
+    total_traffic_score: number
+    slot_traffic: number[]
+    peak_slot_index: number
+    planning_window?: string | null
+    operational_impact_indicators: string[]
   }
   maintenance_window_impact: {
     planned_start: string | null
@@ -166,7 +253,16 @@ interface MaintenanceImpactResponse {
     restricted_period: string
     is_coordinated_bundle: boolean
   }
+  speed_restrictions?: SpeedRestrictionItem[]
+  power_blocks?: PowerBlockItem[]
+  signalling_impacts?: SignallingImpactItem[]
+  departments_detail?: DepartmentImpactItem[]
+  restricted_assets_detail?: RestrictedAssetItem[]
+  baseline_vs_optimized?: BaselineVsOptimized | null
   explanation: string
+  human_approval_required?: boolean
+  human_approval_disclaimer?: string
+  decision_support_note?: string
 }
 
 interface MaintenanceImpactSectionProps {
@@ -175,7 +271,36 @@ interface MaintenanceImpactSectionProps {
   bundles: MaintenanceBundle[]
 }
 
-type ImpactCategoryTab = 'blocks' | 'trains' | 'crews' | 'speed_restrictions' | 'power_blocks' | 'signaling'
+type ImpactCategoryTab =
+  | 'blocks'
+  | 'trains'
+  | 'crews'
+  | 'departments'
+  | 'restricted_assets'
+  | 'speed_restrictions'
+  | 'power_blocks'
+  | 'signaling'
+  | 'dependencies'
+
+function formatDateTime(isoString: string | null | undefined): string {
+  if (!isoString) return '—'
+  const date = new Date(isoString)
+  if (isNaN(date.getTime())) return isoString
+  return date.toLocaleString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+}
+
+function formatTime(isoString: string | null | undefined): string {
+  if (!isoString) return '—'
+  const date = new Date(isoString)
+  if (isNaN(date.getTime())) return isoString
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+}
 
 export default function MaintenanceImpactSection({
   blocks,
@@ -187,12 +312,13 @@ export default function MaintenanceImpactSection({
   const [selectedTaskId, setSelectedTaskId] = useState<string>('')
   const [selectedBundleId, setSelectedBundleId] = useState<string>('')
   const [whatIfBlock, setWhatIfBlock] = useState<string>('')
-  const [whatIfWindow] = useState<string>('night')
+  const [whatIfWindow, setWhatIfWindow] = useState<string>('night')
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [impactData, setImpactData] = useState<MaintenanceImpactResponse | null>(null)
 
+  // Initialize selections with valid active records
   useEffect(() => {
     if (records.length > 0 && !selectedTaskId) {
       setSelectedTaskId(String(records[0].id))
@@ -205,67 +331,133 @@ export default function MaintenanceImpactSection({
     }
   }, [records, bundles, blocks, selectedTaskId, selectedBundleId, whatIfBlock])
 
-  const handleAnalyze = async () => {
-    setLoading(true)
-    setError(null)
+  const handleAnalyze = useCallback(
+    async (
+      overrideType?: 'task' | 'bundle' | 'what-if',
+      overrideId?: string,
+      overrideWindow?: string
+    ) => {
+      const type = overrideType || analysisType
+      const activeWindow = overrideWindow || whatIfWindow
+      setLoading(true)
+      setError(null)
 
-    try {
-      let url = ''
-      let options: RequestInit = {}
+      try {
+        let url = ''
+        let options: RequestInit = {}
 
-      if (analysisType === 'task') {
-        const id = selectedTaskId || (records[0] ? String(records[0].id) : '1')
-        url = `${API_BASE_URL}/ai/maintenance-impact/${id}`
-        options = { method: 'GET' }
-      } else if (analysisType === 'bundle') {
-        const bid = selectedBundleId || (bundles[0] ? bundles[0].bundle_id : 'BUNDLE-GNT-BZA-01')
-        url = `${API_BASE_URL}/ai/maintenance-impact/bundle/${encodeURIComponent(bid)}`
-        options = { method: 'GET' }
-      } else {
-        const blk = whatIfBlock || (blocks[0] ? blocks[0].code : 'GNT-BZA-01')
-        url = `${API_BASE_URL}/ai/maintenance-impact/what-if`
-        options = {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            block_code: blk,
-            name: `What-If Analysis (${whatIfWindow})`,
-            planning_window: whatIfWindow,
-          }),
+        if (type === 'task') {
+          const id = overrideId || selectedTaskId || (records[0] ? String(records[0].id) : '')
+          if (!id) {
+            throw new Error('No maintenance tasks available to analyze. Please create a task first.')
+          }
+          url = `${API_BASE_URL}/ai/maintenance-impact/${encodeURIComponent(id)}`
+          options = { method: 'GET' }
+        } else if (type === 'bundle') {
+          const bid = overrideId || selectedBundleId || (bundles[0] ? bundles[0].bundle_id : '')
+          if (!bid) {
+            throw new Error('No coordinated maintenance bundles found to analyze.')
+          }
+          url = `${API_BASE_URL}/ai/maintenance-impact/bundle/${encodeURIComponent(bid)}`
+          options = { method: 'GET' }
+        } else {
+          const blk = overrideId || whatIfBlock || (blocks[0] ? blocks[0].code : '')
+          if (!blk) {
+            throw new Error('No railway block available for What-If scenario simulation.')
+          }
+          url = `${API_BASE_URL}/ai/maintenance-impact/what-if`
+          options = {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              block_code: blk,
+              name: `What-If Analysis (${blk} - ${activeWindow})`,
+              planning_window: activeWindow,
+            }),
+          }
         }
-      }
 
-      const res = await fetch(url, options)
-      if (!res.ok) {
-        const errData = await res.json().catch(() => null)
-        throw new Error(errData?.detail || `Impact analysis failed (${res.status})`)
-      }
+        const res = await fetch(url, options)
+        if (!res.ok) {
+          const errData = await res.json().catch(() => null)
+          throw new Error(errData?.detail || `Impact analysis failed with status ${res.status}`)
+        }
 
-      const data: MaintenanceImpactResponse = await res.json()
-      setImpactData(data)
-    } catch (err: any) {
-      setError(err.message || 'Failed to analyze maintenance impact.')
-      setImpactData(null)
-    } finally {
-      setLoading(false)
+        const data: MaintenanceImpactResponse = await res.json()
+        setImpactData(data)
+      } catch (err: any) {
+        setError(err.message || 'Failed to analyze maintenance impact.')
+        setImpactData(null)
+      } finally {
+        setLoading(false)
+      }
+    },
+    [analysisType, selectedTaskId, selectedBundleId, whatIfBlock, whatIfWindow, records, bundles, blocks]
+  )
+
+  // Initial analysis on mount when records are ready
+  useEffect(() => {
+    if (!impactData && (selectedTaskId || records.length > 0)) {
+      const initialId = selectedTaskId || (records[0] ? String(records[0].id) : '')
+      if (initialId) {
+        void handleAnalyze('task', initialId)
+      }
+    }
+  }, [records, selectedTaskId, impactData, handleAnalyze])
+
+  // Mode switcher handler with automatic evaluation
+  const handleModeChange = (mode: 'task' | 'bundle' | 'what-if') => {
+    setAnalysisType(mode)
+    setError(null)
+    if (mode === 'task') {
+      const id = selectedTaskId || (records[0] ? String(records[0].id) : '')
+      if (id) void handleAnalyze('task', id)
+    } else if (mode === 'bundle') {
+      const bid = selectedBundleId || (bundles[0] ? bundles[0].bundle_id : '')
+      if (bid) void handleAnalyze('bundle', bid)
+    } else {
+      const blk = whatIfBlock || (blocks[0] ? blocks[0].code : '')
+      if (blk) void handleAnalyze('what-if', blk)
     }
   }
 
-  useEffect(() => {
-    if (!impactData && (selectedTaskId || records.length > 0)) {
-      void handleAnalyze()
-    }
-  }, [])
+  // KPI calculations: strictly aligned with returned data counts, defaulting to 0
+  const kpiBlocks = impactData ? (impactData.impact_summary?.affected_blocks ?? 0) : 0
+  const kpiTrains = impactData ? (impactData.impact_summary?.affected_trains ?? 0) : 0
+  const kpiCrews = impactData ? (impactData.impact_summary?.crews ?? 0) : 0
+  const kpiDepts = impactData ? (impactData.impact_summary?.departments ?? 0) : 0
+  const kpiRestrictedAssets = impactData ? (impactData.impact_summary?.restricted_assets ?? 0) : 0
+  const kpiWindow = impactData?.maintenance_window_impact?.restricted_period || (impactData?.duration_minutes ? `${impactData.duration_minutes} min` : '—')
+  const kpiTrafficImpact = impactData?.impact_summary?.traffic_level || impactData?.traffic_impact?.overall_traffic_level || '—'
+  const kpiDependentTask = impactData ? (impactData.impact_summary?.dependent_tasks ?? 0) : 0
 
-  // 8 KPIs derived from impact data or realistic defaults
-  const kpiBlocks = impactData?.impact_summary?.affected_blocks ?? 3
-  const kpiTrains = impactData?.impact_summary?.affected_trains ?? 14
-  const kpiCrews = impactData?.impact_summary?.crews ?? 8
-  const kpiDepts = impactData?.impact_summary?.departments ?? 4
-  const kpiRestrictedAssets = impactData?.impact_summary?.restricted_assets ?? 2
-  const kpiWindow = impactData?.maintenance_window_impact?.restricted_period || '02:00 - 06:00'
-  const kpiTrafficImpact = impactData?.impact_summary?.traffic_level || 'Low - 8.2%'
-  const kpiDependentTask = impactData?.impact_summary?.dependent_tasks ?? 1
+  const tabCounts = {
+    blocks: impactData?.block_impact?.affected_blocks?.length ?? kpiBlocks,
+    trains: impactData?.train_impact?.affected_trains_count ?? kpiTrains,
+    crews: impactData?.crew_impact?.total_crews_involved ?? kpiCrews,
+    departments: impactData?.departments_detail?.length ?? kpiDepts,
+    restricted_assets: impactData?.restricted_assets_detail?.length ?? kpiRestrictedAssets,
+    speed_restrictions: impactData?.speed_restrictions?.length ?? 0,
+    power_blocks: impactData?.power_blocks?.length ?? 0,
+    signaling: impactData?.signalling_impacts?.length ?? 0,
+    dependencies: impactData?.dependency_impact?.downstream_tasks_count ?? kpiDependentTask,
+  }
+
+  const emptyBoxStyle = {
+    padding: '36px 20px',
+    textAlign: 'center' as const,
+    color: 'var(--text-secondary, #94A3B8)',
+    fontSize: '13px',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    gap: '8px',
+  }
+
+  const isStationBasedTask =
+    impactData?.target_type === 'task' &&
+    (!impactData?.block_impact?.affected_blocks || impactData.block_impact.affected_blocks.length === 0) &&
+    (impactData?.block_impact?.affected_stations?.length ?? 0) > 0
 
   return (
     <div className="enterprise-container" style={{ marginBottom: '24px' }}>
@@ -274,7 +466,7 @@ export default function MaintenanceImpactSection({
         <div className="enterprise-title-group">
           <h2>Maintenance Impact Analysis</h2>
           <p className="enterprise-subtitle">
-            Cross-functional impact matrix evaluating track maintenance effects across network operations.
+            Cross-functional operational impact matrix evaluating track possession, train movements, and infrastructure restrictions.
           </p>
         </div>
 
@@ -283,7 +475,7 @@ export default function MaintenanceImpactSection({
           <div style={{ display: 'flex', background: 'var(--bg-elevated, #F1F5F9)', padding: '3px', borderRadius: '6px', border: '1px solid var(--border-light, #CBD5E1)' }}>
             <button
               type="button"
-              onClick={() => setAnalysisType('task')}
+              onClick={() => handleModeChange('task')}
               style={{
                 padding: '5px 12px',
                 borderRadius: '4px',
@@ -300,7 +492,7 @@ export default function MaintenanceImpactSection({
             </button>
             <button
               type="button"
-              onClick={() => setAnalysisType('bundle')}
+              onClick={() => handleModeChange('bundle')}
               style={{
                 padding: '5px 12px',
                 borderRadius: '4px',
@@ -317,7 +509,7 @@ export default function MaintenanceImpactSection({
             </button>
             <button
               type="button"
-              onClick={() => setAnalysisType('what-if')}
+              onClick={() => handleModeChange('what-if')}
               style={{
                 padding: '5px 12px',
                 borderRadius: '4px',
@@ -334,62 +526,125 @@ export default function MaintenanceImpactSection({
             </button>
           </div>
 
+          {/* TASK MODE SELECTION */}
           {analysisType === 'task' && records.length > 0 && (
             <select
               value={selectedTaskId}
-              onChange={(e) => setSelectedTaskId(e.target.value)}
+              onChange={(e) => {
+                setSelectedTaskId(e.target.value)
+                void handleAnalyze('task', e.target.value)
+              }}
               className="enterprise-select"
             >
               {records.map((r) => (
                 <option key={r.id} value={r.id}>
-                  #{r.id} - {r.maintenance_type} ({r.block_code || r.station_code})
+                  #{r.id} - {r.maintenance_type} ({r.block_code || r.station_code || 'Yard'})
                 </option>
               ))}
             </select>
           )}
 
+          {analysisType === 'task' && records.length === 0 && (
+            <span style={{ fontSize: '12px', color: 'var(--text-secondary, #94A3B8)' }}>
+              No maintenance tasks in database
+            </span>
+          )}
+
+          {/* BUNDLE MODE SELECTION */}
           {analysisType === 'bundle' && (
             <select
               value={selectedBundleId}
-              onChange={(e) => setSelectedBundleId(e.target.value)}
+              onChange={(e) => {
+                setSelectedBundleId(e.target.value)
+                void handleAnalyze('bundle', e.target.value)
+              }}
               className="enterprise-select"
             >
               {bundles.map((b) => (
                 <option key={b.bundle_id} value={b.bundle_id}>
-                  {b.bundle_id} ({b.block_code})
+                  {b.bundle_id} ({b.block_code}{b.block_name ? ` - ${b.block_name}` : ''}) • {b.total_tasks || 0} tasks
                 </option>
               ))}
-              {bundles.length === 0 && <option value="BUNDLE-GNT-BZA-01">BUNDLE-GNT-BZA-01 (Guntur Section)</option>}
+              {bundles.length === 0 && <option value="">No coordinated bundles available</option>}
             </select>
           )}
 
+          {/* WHAT-IF MODE SELECTION */}
           {analysisType === 'what-if' && (
-            <select
-              value={whatIfBlock}
-              onChange={(e) => setWhatIfBlock(e.target.value)}
-              className="enterprise-select"
-            >
-              {blocks.map((b) => (
-                <option key={b.code} value={b.code}>
-                  {b.code} ({b.name})
-                </option>
-              ))}
-              {blocks.length === 0 && <option value="GNT-BZA-01">GNT-BZA-01</option>}
-            </select>
+            <>
+              <select
+                value={whatIfBlock}
+                onChange={(e) => {
+                  setWhatIfBlock(e.target.value)
+                  void handleAnalyze('what-if', e.target.value, whatIfWindow)
+                }}
+                className="enterprise-select"
+              >
+                {blocks.map((b) => (
+                  <option key={b.code} value={b.code}>
+                    {b.code} ({b.name})
+                  </option>
+                ))}
+                {blocks.length === 0 && <option value="">No blocks available</option>}
+              </select>
+
+              <select
+                value={whatIfWindow}
+                onChange={(e) => {
+                  setWhatIfWindow(e.target.value)
+                  void handleAnalyze('what-if', whatIfBlock, e.target.value)
+                }}
+                className="enterprise-select"
+                style={{ width: '130px' }}
+              >
+                <option value="night">Night Slot</option>
+                <option value="daytime">Day Slot</option>
+                <option value="any">Any Slot</option>
+              </select>
+            </>
           )}
 
           <button
             type="button"
-            onClick={handleAnalyze}
+            onClick={() => handleAnalyze()}
             disabled={loading}
             className="enterprise-btn-primary"
           >
             {loading ? <RefreshCw size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <Search size={14} />}
-            <span>{loading ? 'Evaluating...' : 'Analyze Impact'}</span>
+            <span>{loading ? 'Analyzing Impact...' : 'Analyze Impact'}</span>
           </button>
         </div>
       </div>
 
+      {/* Decision Support Notice & Human Approval Banner */}
+      <div style={{
+        padding: '10px 14px',
+        borderRadius: '6px',
+        background: 'rgba(30, 58, 138, 0.12)',
+        border: '1px solid rgba(59, 130, 246, 0.3)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: '12px',
+        fontSize: '12px',
+        color: 'var(--text-primary, #E2E8F0)',
+        flexWrap: 'wrap',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <ShieldAlert size={16} style={{ color: '#38BDF8', flexShrink: 0 }} />
+          <span>
+            <strong>Decision-Support System:</strong> {impactData?.decision_support_note || 'Impact analysis evaluates modeled train conflicts, crew workload, and network asset availability to inform section controllers.'}
+          </span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(239, 68, 68, 0.15)', padding: '4px 10px', borderRadius: '4px', border: '1px solid rgba(239, 68, 68, 0.4)' }}>
+          <ShieldCheck size={14} style={{ color: '#F87171' }} />
+          <span style={{ fontSize: '11px', fontWeight: 700, color: '#FCA5A5' }}>
+            Human Approval Required
+          </span>
+        </div>
+      </div>
+
+      {/* ERROR BANNER */}
       {error && (
         <div style={{ padding: '12px 16px', borderRadius: '6px', background: 'var(--bg-error, #211416)', border: '1px solid var(--border-error, #6B2A32)', color: 'var(--text-error, #F5A0A8)', fontSize: '12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -398,7 +653,7 @@ export default function MaintenanceImpactSection({
           </div>
           <button
             type="button"
-            onClick={handleAnalyze}
+            onClick={() => handleAnalyze()}
             disabled={loading}
             className="enterprise-btn-secondary"
             style={{ height: '28px', padding: '0 10px', fontSize: '11.5px', whiteSpace: 'nowrap' }}
@@ -409,15 +664,26 @@ export default function MaintenanceImpactSection({
         </div>
       )}
 
-      {/* 2. CATEGORY TAB PILLS (MATCHING REFERENCE PANEL 4) */}
+      {/* LOADING BANNER */}
+      {loading && (
+        <div style={{ padding: '10px 14px', borderRadius: '6px', background: 'rgba(14, 165, 233, 0.1)', border: '1px solid rgba(14, 165, 233, 0.3)', color: '#38BDF8', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <RefreshCw size={14} style={{ animation: 'spin 1s linear infinite' }} />
+          <span>Analyzing operational impact across railway topology and timetables...</span>
+        </div>
+      )}
+
+      {/* 2. CATEGORY TAB PILLS (ALL 9 FUNCTIONAL SECTIONS) */}
       <div style={{ display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '4px' }}>
         {[
-          { key: 'blocks', label: 'Blocks' },
-          { key: 'trains', label: 'Trains' },
-          { key: 'crews', label: 'Crews' },
-          { key: 'speed_restrictions', label: 'Speed Restrictions' },
-          { key: 'power_blocks', label: 'Power Blocks' },
-          { key: 'signaling', label: 'Signaling' },
+          { key: 'blocks', label: 'Blocks', count: tabCounts.blocks },
+          { key: 'trains', label: 'Trains', count: tabCounts.trains },
+          { key: 'crews', label: 'Crews', count: tabCounts.crews },
+          { key: 'departments', label: 'Departments', count: tabCounts.departments },
+          { key: 'restricted_assets', label: 'Restricted Assets', count: tabCounts.restricted_assets },
+          { key: 'speed_restrictions', label: 'Speed Restrictions', count: tabCounts.speed_restrictions },
+          { key: 'power_blocks', label: 'Power Blocks', count: tabCounts.power_blocks },
+          { key: 'signaling', label: 'Signalling', count: tabCounts.signaling },
+          { key: 'dependencies', label: 'Dependencies', count: tabCounts.dependencies },
         ].map((tab) => {
           const active = selectedCategoryTab === tab.key
           return (
@@ -426,7 +692,10 @@ export default function MaintenanceImpactSection({
               type="button"
               onClick={() => setSelectedCategoryTab(tab.key as ImpactCategoryTab)}
               style={{
-                padding: '7px 16px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '7px 14px',
                 borderRadius: '20px',
                 fontSize: '12px',
                 fontWeight: 700,
@@ -438,18 +707,30 @@ export default function MaintenanceImpactSection({
                 whiteSpace: 'nowrap',
               }}
             >
-              {tab.label}
+              <span>{tab.label}</span>
+              <span
+                style={{
+                  fontSize: '10px',
+                  fontWeight: 800,
+                  padding: '1px 6px',
+                  borderRadius: '10px',
+                  background: active ? 'rgba(255, 255, 255, 0.25)' : 'rgba(255, 255, 255, 0.08)',
+                  color: active ? '#FFFFFF' : 'var(--text-secondary, #94A3B8)',
+                }}
+              >
+                {tab.count}
+              </span>
             </button>
           )
         })}
       </div>
 
-      {/* 3. 8 KPI SUMMARY TILES (MATCHING REFERENCE PANEL 4) */}
+      {/* 3. 8 KPI SUMMARY TILES (MATCHING DETAIL COUNTS STRICTLY, 0 INSTEAD OF FAKE DATA) */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, minmax(0, 1fr))', gap: '10px' }}>
         <div className="enterprise-card" style={{ padding: '12px', textAlign: 'center', background: 'var(--bg-card, #151719)', border: '1px solid var(--border-light, #2A2D32)', borderRadius: '8px' }}>
           <div style={{ fontSize: '10.5px', color: 'var(--text-secondary, #B9BDC4)', textTransform: 'uppercase', fontWeight: 700 }}>Blocks</div>
           <div style={{ fontSize: '18px', fontWeight: 800, color: 'var(--text-primary, #F5F5F5)', marginTop: '3px' }}>{kpiBlocks}</div>
-          <div style={{ fontSize: '10px', color: '#2E8B57', marginTop: '2px', fontWeight: 600 }}>Active</div>
+          <div style={{ fontSize: '10px', color: '#2E8B57', marginTop: '2px', fontWeight: 600 }}>Possessed</div>
         </div>
 
         <div className="enterprise-card" style={{ padding: '12px', textAlign: 'center', background: 'var(--bg-card, #151719)', border: '1px solid var(--border-light, #2A2D32)', borderRadius: '8px' }}>
@@ -478,263 +759,764 @@ export default function MaintenanceImpactSection({
 
         <div className="enterprise-card" style={{ padding: '12px', textAlign: 'center', background: 'var(--bg-card, #151719)', border: '1px solid var(--border-light, #2A2D32)', borderRadius: '8px' }}>
           <div style={{ fontSize: '10.5px', color: 'var(--text-secondary, #B9BDC4)', textTransform: 'uppercase', fontWeight: 700 }}>Window</div>
-          <div style={{ fontSize: '14px', fontWeight: 800, color: 'var(--text-primary, #F5F5F5)', marginTop: '5px' }}>{kpiWindow}</div>
-          <div style={{ fontSize: '10px', color: '#1F5F9C', marginTop: '2px', fontWeight: 600 }}>Night Slot</div>
+          <div style={{ fontSize: '12px', fontWeight: 800, color: 'var(--text-primary, #F5F5F5)', marginTop: '5px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={kpiWindow}>
+            {kpiWindow}
+          </div>
+          <div style={{ fontSize: '10px', color: '#1F5F9C', marginTop: '2px', fontWeight: 600 }}>Planned Slot</div>
         </div>
 
         <div className="enterprise-card" style={{ padding: '12px', textAlign: 'center', background: 'var(--bg-card, #151719)', border: '1px solid var(--border-light, #2A2D32)', borderRadius: '8px' }}>
           <div style={{ fontSize: '10.5px', color: 'var(--text-secondary, #B9BDC4)', textTransform: 'uppercase', fontWeight: 700 }}>Traffic Impact</div>
-          <div style={{ fontSize: '14px', fontWeight: 800, color: '#2E8B57', marginTop: '5px' }}>{kpiTrafficImpact}</div>
-          <div style={{ fontSize: '10px', color: '#2E8B57', marginTop: '2px', fontWeight: 600 }}>Minimal</div>
+          <div style={{ fontSize: '13px', fontWeight: 800, color: String(kpiTrafficImpact).toLowerCase().includes('high') ? '#EF4444' : '#2E8B57', marginTop: '5px' }}>
+            {kpiTrafficImpact}
+          </div>
+          <div style={{ fontSize: '10px', color: '#94A3B8', marginTop: '2px', fontWeight: 600 }}>Level</div>
         </div>
 
         <div className="enterprise-card" style={{ padding: '12px', textAlign: 'center', background: 'var(--bg-card, #151719)', border: '1px solid var(--border-light, #2A2D32)', borderRadius: '8px' }}>
           <div style={{ fontSize: '10.5px', color: 'var(--text-secondary, #B9BDC4)', textTransform: 'uppercase', fontWeight: 700 }}>Dependent Task</div>
           <div style={{ fontSize: '18px', fontWeight: 800, color: 'var(--text-primary, #F5F5F5)', marginTop: '3px' }}>{kpiDependentTask}</div>
-          <div style={{ fontSize: '10px', color: '#D97706', marginTop: '2px', fontWeight: 600 }}>Pending</div>
+          <div style={{ fontSize: '10px', color: '#D97706', marginTop: '2px', fontWeight: 600 }}>Downstream</div>
         </div>
       </div>
 
-      {/* 4. DETAILED IMPACT TABLE (BASED ON SELECTED CATEGORY TAB) */}
+      {/* 4. DETAILED IMPACT TABLE & CARDS (ALL 9 DOMAINS) */}
       <div className="enterprise-card" style={{ background: 'var(--bg-table, #121416)', border: '1px solid var(--border-light, #2A2D32)', borderRadius: '8px', overflow: 'hidden' }}>
+        
+        {/* TAB 1: BLOCKS & STATIONS */}
         {selectedCategoryTab === 'blocks' && (
           <>
             <div className="enterprise-card-header">
-              <h3 className="enterprise-card-title">Affected Railway Blocks & Route Sections</h3>
-              <span style={{ fontSize: '12px', color: 'var(--text-secondary, #B9BDC4)' }}>
-                {impactData?.block_impact?.affected_blocks_count || 3} Blocks Restricted
-              </span>
+              <div>
+                <h3 className="enterprise-card-title">Affected Railway Blocks & Station Yards</h3>
+                <span style={{ fontSize: '12px', color: 'var(--text-secondary, #B9BDC4)' }}>
+                  {impactData?.block_impact?.affected_blocks?.length || 0} Block(s) Restricted • {impactData?.block_impact?.affected_stations?.length || 0} Station(s) Affected
+                </span>
+              </div>
+              {isStationBasedTask && (
+                <span className="status-chip medium" style={{ fontSize: '11px' }}>
+                  Station-Based Possession
+                </span>
+              )}
             </div>
-            <div style={{ overflowX: 'auto' }}>
-              <table className="enterprise-table">
-                <thead>
-                  <tr>
-                    <th>Block Code</th>
-                    <th>Route Section</th>
-                    <th>Distance</th>
-                    <th>Restriction Window</th>
-                    <th>Connected Stations</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(impactData?.block_impact?.affected_blocks || [
-                    { block_code: 'GNT-BZA-01', block_name: 'Guntur - Vijayawada Up Main', distance_km: 32.4, restriction_start: '01:30', restriction_end: '04:30', start_station_code: 'GNT', end_station_code: 'BZA', duration_minutes: 180, maintenance_task_ids: [1] },
-                    { block_code: 'NDK-GNT-01', block_name: 'Nadikudi - Guntur Corridor', distance_km: 78.1, restriction_start: '02:00', restriction_end: '05:00', start_station_code: 'NDK', end_station_code: 'GNT', duration_minutes: 180, maintenance_task_ids: [2] },
-                    { block_code: 'STP-NDK-01', block_name: 'Sattenapalle - Nadikudi', distance_km: 42.6, restriction_start: '01:00', restriction_end: '03:30', start_station_code: 'STP', end_station_code: 'NDK', duration_minutes: 150, maintenance_task_ids: [3] },
-                  ]).map((b, idx) => (
-                    <tr key={idx}>
-                      <td><strong style={{ color: 'var(--text-primary, #F5F5F5)' }}>{b.block_code}</strong></td>
-                      <td style={{ fontWeight: 600, color: 'var(--text-primary, #F5F5F5)' }}>{b.block_name}</td>
-                      <td style={{ color: 'var(--text-secondary, #B9BDC4)' }}>{b.distance_km} km</td>
-                      <td style={{ color: '#1F5F9C', fontWeight: 600 }}>{b.restriction_start || '01:30'} - {b.restriction_end || '04:30'} ({b.duration_minutes || 180}m)</td>
-                      <td style={{ color: 'var(--text-secondary, #B9BDC4)' }}>{b.start_station_code} ➔ {b.end_station_code}</td>
-                      <td>
-                        <span className="status-chip warning">Corridor Closed</span>
-                      </td>
+
+            {/* Block section table */}
+            {(!impactData?.block_impact?.affected_blocks || impactData.block_impact.affected_blocks.length === 0) ? (
+              <div style={emptyBoxStyle}>
+                <Info size={24} style={{ color: '#38BDF8' }} />
+                <span>No affected railway blocks for this analysis.</span>
+                {isStationBasedTask && (
+                  <span style={{ fontSize: '11.5px', color: '#94A3B8' }}>
+                    This maintenance task is located inside station yard limits rather than an open block section.
+                  </span>
+                )}
+              </div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table className="enterprise-table">
+                  <thead>
+                    <tr>
+                      <th>Block Code</th>
+                      <th>Route Section</th>
+                      <th>Distance</th>
+                      <th>Restriction Window</th>
+                      <th>Connected Stations</th>
+                      <th>Status</th>
+                      <th>Task IDs</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {impactData.block_impact.affected_blocks.map((b, idx) => (
+                      <tr key={idx}>
+                        <td><strong style={{ color: 'var(--text-primary, #F5F5F5)' }}>{b.block_code}</strong></td>
+                        <td style={{ fontWeight: 600, color: 'var(--text-primary, #F5F5F5)' }}>{b.block_name}</td>
+                        <td style={{ color: 'var(--text-secondary, #B9BDC4)' }}>{b.distance_km} km</td>
+                        <td style={{ color: '#38BDF8', fontWeight: 600 }}>
+                          {formatTime(b.restriction_start)} – {formatTime(b.restriction_end)} ({b.duration_minutes}m)
+                        </td>
+                        <td style={{ color: 'var(--text-secondary, #B9BDC4)' }}>
+                          {b.start_station_code} ➔ {b.end_station_code}
+                        </td>
+                        <td>
+                          <span className="status-chip critical">Possessed (Closed)</span>
+                        </td>
+                        <td style={{ color: 'var(--text-secondary, #B9BDC4)', fontSize: '11.5px' }}>
+                          Task #{b.maintenance_task_ids.join(', #') || impactData.target_id}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* Station impact table */}
+            {impactData?.block_impact?.affected_stations && impactData.block_impact.affected_stations.length > 0 && (
+              <div style={{ borderTop: '1px solid var(--border-light, #2A2D32)', padding: '16px 20px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+                  <Building size={16} style={{ color: '#38BDF8' }} />
+                  <strong style={{ fontSize: '13px', color: 'var(--text-primary, #F5F5F5)' }}>
+                    Station Impact & Terminal Clearances
+                  </strong>
+                </div>
+                <div style={{ overflowX: 'auto' }}>
+                  <table className="enterprise-table">
+                    <thead>
+                      <tr>
+                        <th>Station Code</th>
+                        <th>Station Name</th>
+                        <th>Connected Corridors</th>
+                        <th>Operational Impact</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {impactData.block_impact.affected_stations.map((s, idx) => (
+                        <tr key={idx}>
+                          <td><strong style={{ color: 'var(--text-primary, #F5F5F5)' }}>{s.station_code}</strong></td>
+                          <td style={{ fontWeight: 600, color: 'var(--text-primary, #F5F5F5)' }}>{s.station_name || `Station ${s.station_code}`}</td>
+                          <td style={{ color: 'var(--text-secondary, #B9BDC4)' }}>
+                            {s.connected_blocks.join(', ') || 'Direct Station Yard'}
+                          </td>
+                          <td>
+                            <span className="status-chip warning">
+                              {isStationBasedTask ? 'Platform / Yard Work Possession' : 'Boundary Station / Traffic Holding'}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </>
         )}
 
+        {/* TAB 2: TRAINS (ACTUAL CONFLICTS ONLY) */}
         {selectedCategoryTab === 'trains' && (
           <>
             <div className="enterprise-card-header">
-              <h3 className="enterprise-card-title">Impacted Train Movements & Conflict Rationale</h3>
+              <h3 className="enterprise-card-title">Impacted Train Movements & Timetable Conflicts</h3>
               <span style={{ fontSize: '12px', color: 'var(--text-secondary, #B9BDC4)' }}>
-                {impactData?.train_impact?.affected_trains_count || 14} Trains Evaluated
+                {impactData?.train_impact?.affected_trains_count || 0} Affected Train(s) • {impactData?.train_impact?.total_conflicts || 0} Conflict(s)
               </span>
             </div>
-            <div style={{ overflowX: 'auto' }}>
-              <table className="enterprise-table">
-                <thead>
-                  <tr>
-                    <th>Train Number</th>
-                    <th>Train Name</th>
-                    <th>Current Station</th>
-                    <th>Priority</th>
-                    <th>Conflict Type</th>
-                    <th>Severity</th>
-                    <th>Mitigation Recommendation</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(impactData?.train_impact?.trains || [
-                    { train_number: '12704', train_name: 'Falaknuma Express', current_station: 'GNT', priority: 'High', conflict_type: 'Headway Overlap', conflict_severity: 'High', recommendation: 'Reschedule departure by +15m; clear via loop line.' },
-                    { train_number: '12710', train_name: 'Simhapuri Express', current_station: 'NDK', priority: 'High', conflict_type: 'Opposing Path', conflict_severity: 'Moderate', recommendation: 'Hold at Nadikudi Platform 2 until block clearance.' },
-                    { train_number: '17226', train_name: 'Amaravati Express', current_station: 'BZA', priority: 'Normal', conflict_type: 'Route Closure', conflict_severity: 'Low', recommendation: 'Divert via Vijayawada bypass line.' },
-                    { train_number: 'BOXN-402', train_name: 'Freight Coal Rake', current_station: 'STP', priority: 'Low', conflict_type: 'Section Block', conflict_severity: 'Moderate', recommendation: 'Staged at Sattenapalle goods siding until 05:00.' },
-                  ]).map((t, idx) => (
-                    <tr key={idx}>
-                      <td><strong style={{ color: 'var(--text-primary, #F5F5F5)' }}>{t.train_number}</strong></td>
-                      <td style={{ fontWeight: 600, color: 'var(--text-primary, #F5F5F5)' }}>{t.train_name}</td>
-                      <td style={{ color: 'var(--text-secondary, #B9BDC4)' }}>{t.current_station || 'In Transit'}</td>
-                      <td><span className="status-chip medium">{t.priority || 'Normal'}</span></td>
-                      <td style={{ color: '#D97706', fontWeight: 600 }}>{t.conflict_type}</td>
-                      <td>
-                        <span className={`status-chip ${t.conflict_severity === 'High' ? 'critical' : 'warning'}`}>
-                          {t.conflict_severity}
-                        </span>
-                      </td>
-                      <td style={{ color: 'var(--text-secondary, #B9BDC4)', fontSize: '11.5px' }}>{t.recommendation}</td>
+            {(!impactData?.train_impact?.trains || impactData.train_impact.trains.length === 0) ? (
+              <div style={emptyBoxStyle}>
+                <CheckCircle2 size={24} style={{ color: '#10B981' }} />
+                <strong style={{ color: 'var(--text-primary, #F5F5F5)' }}>0 train conflicts modeled for this maintenance window.</strong>
+                <span style={{ fontSize: '12px', color: '#94A3B8' }}>
+                  Timetable analysis shows no scheduled train services intersect this block corridor during the planned possession slot.
+                </span>
+              </div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table className="enterprise-table">
+                  <thead>
+                    <tr>
+                      <th>Train No.</th>
+                      <th>Train Name</th>
+                      <th>Type</th>
+                      <th>Source ➔ Dest</th>
+                      <th>Current Station</th>
+                      <th>Direction</th>
+                      <th>Priority</th>
+                      <th>Impact / Conflict</th>
+                      <th>Severity</th>
+                      <th>Recommended Handling / Action</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {impactData.train_impact.trains.map((t, idx) => (
+                      <tr key={idx}>
+                        <td><strong style={{ color: 'var(--text-primary, #F5F5F5)' }}>{t.train_number}</strong></td>
+                        <td style={{ fontWeight: 600, color: 'var(--text-primary, #F5F5F5)' }}>{t.train_name}</td>
+                        <td style={{ color: 'var(--text-secondary, #B9BDC4)', fontSize: '11px' }}>{t.train_type || 'Express'}</td>
+                        <td style={{ color: 'var(--text-secondary, #B9BDC4)', fontSize: '11.5px' }}>
+                          {t.source_station || 'N/A'} ➔ {t.destination_station || 'N/A'}
+                        </td>
+                        <td style={{ color: 'var(--text-secondary, #B9BDC4)' }}>{t.current_station || 'In Transit'}</td>
+                        <td><span className="status-chip normal">{t.direction || 'UP'}</span></td>
+                        <td>
+                          <span className={`status-chip ${String(t.priority).toLowerCase() === 'high' || String(t.priority).toLowerCase() === 'critical' ? 'critical' : 'normal'}`}>
+                            {t.priority || 'Normal'}
+                          </span>
+                        </td>
+                        <td style={{ color: '#D97706', fontWeight: 600, fontSize: '11.5px' }}>{t.conflict_type}</td>
+                        <td>
+                          <span className={`status-chip ${String(t.conflict_severity).toLowerCase() === 'high' ? 'critical' : 'warning'}`}>
+                            {t.conflict_severity}
+                          </span>
+                        </td>
+                        <td style={{ color: 'var(--text-secondary, #CBD5E1)', fontSize: '11.5px' }}>
+                          {t.recommendation || 'Hold at previous station or route via alternate line.'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </>
         )}
 
+        {/* TAB 3: CREWS (ACTUAL ASSIGNED CREWS ONLY) */}
         {selectedCategoryTab === 'crews' && (
           <>
             <div className="enterprise-card-header">
               <h3 className="enterprise-card-title">Assigned Crews & Department Logistics</h3>
               <span style={{ fontSize: '12px', color: 'var(--text-secondary, #B9BDC4)' }}>
-                {impactData?.crew_impact?.total_crews_involved || 8} Active Crews
+                {impactData?.crew_impact?.total_crews_involved || 0} Crew(s) Mobilized
               </span>
             </div>
-            <div style={{ overflowX: 'auto' }}>
-              <table className="enterprise-table">
-                <thead>
-                  <tr>
-                    <th>Crew Unit</th>
-                    <th>Department</th>
-                    <th>Specialization</th>
-                    <th>Required Headcount</th>
-                    <th>Available Capacity</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(impactData?.crew_impact?.crews || [
-                    { name: 'P-Way Track Maintenance Unit 1', department: 'Civil Engineering', crew_type: 'Track Machine Gang', required_crew_size: 14, available_capacity: 16, tasks_assigned_count: 2 },
-                    { name: 'OHE Tower Wagon Team', department: 'Electrical (TRD)', crew_type: 'Overhead Line Crew', required_crew_size: 6, available_capacity: 8, tasks_assigned_count: 1 },
-                    { name: 'Signal & Telecom Gang 4', department: 'S&T', crew_type: 'Interlocking & Point Crew', required_crew_size: 4, available_capacity: 5, tasks_assigned_count: 1 },
-                    { name: 'Bridge Inspection Unit', department: 'Civil Engineering', crew_type: 'Structural Inspection', required_crew_size: 5, available_capacity: 6, tasks_assigned_count: 1 },
-                  ]).map((c, idx) => (
-                    <tr key={idx}>
-                      <td><strong style={{ color: 'var(--text-primary, #F5F5F5)' }}>{c.name}</strong></td>
-                      <td><span className="status-chip normal">{c.department}</span></td>
-                      <td style={{ color: 'var(--text-secondary, #B9BDC4)' }}>{c.crew_type}</td>
-                      <td style={{ color: 'var(--text-primary, #F5F5F5)', fontWeight: 600 }}>{c.required_crew_size} members</td>
-                      <td style={{ color: '#2E8B57', fontWeight: 600 }}>{c.available_capacity} available</td>
-                      <td><span className="status-chip completed">Mobilized</span></td>
+            {(!impactData?.crew_impact?.crews || impactData.crew_impact.crews.length === 0) ? (
+              <div style={emptyBoxStyle}>
+                <Info size={24} style={{ color: '#38BDF8' }} />
+                <span>No crew impact data available for this task.</span>
+              </div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table className="enterprise-table">
+                  <thead>
+                    <tr>
+                      <th>Crew Name / ID</th>
+                      <th>Department</th>
+                      <th>Crew Type / Specialization</th>
+                      <th>Crew Size / Capacity</th>
+                      <th>Assigned Task</th>
+                      <th>Location</th>
+                      <th>Availability</th>
+                      <th>Scheduled Window</th>
+                      <th>Workload Notes</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {impactData.crew_impact.crews.map((c, idx) => (
+                      <tr key={idx}>
+                        <td>
+                          <strong style={{ color: 'var(--text-primary, #F5F5F5)' }}>{c.name}</strong>
+                          {c.crew_id && <span style={{ fontSize: '10.5px', color: 'var(--text-secondary, #94A3B8)', marginLeft: '6px' }}>#{c.crew_id}</span>}
+                        </td>
+                        <td><span className="status-chip normal">{c.department}</span></td>
+                        <td style={{ color: 'var(--text-secondary, #B9BDC4)' }}>{c.crew_type}</td>
+                        <td style={{ color: 'var(--text-primary, #F5F5F5)', fontWeight: 600 }}>
+                          {c.required_crew_size} req / {c.available_capacity} cap
+                        </td>
+                        <td style={{ color: '#38BDF8', fontWeight: 600 }}>
+                          Task #{c.assigned_task_ids?.join(', #') || impactData.target_id}
+                        </td>
+                        <td style={{ color: 'var(--text-secondary, #B9BDC4)' }}>{c.location || impactData.block_code}</td>
+                        <td>
+                          <span className={`status-chip ${String(c.availability).toLowerCase().includes('avail') ? 'completed' : 'medium'}`}>
+                            {c.availability || 'Assigned'}
+                          </span>
+                        </td>
+                        <td style={{ color: '#38BDF8', fontSize: '11.5px' }}>
+                          {c.scheduled_window || impactData.maintenance_window_impact?.restricted_period || 'Scheduled'}
+                        </td>
+                        <td style={{ color: 'var(--text-secondary, #B9BDC4)', fontSize: '11.5px' }}>
+                          {c.workload_notes || `Assigned to ${c.tasks_assigned_count || 1} task(s)`}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </>
         )}
 
+        {/* TAB 4: DEPARTMENTS */}
+        {selectedCategoryTab === 'departments' && (
+          <>
+            <div className="enterprise-card-header">
+              <h3 className="enterprise-card-title">Participating Railway Departments</h3>
+              <span style={{ fontSize: '12px', color: 'var(--text-secondary, #B9BDC4)' }}>
+                {impactData?.departments_detail?.length || impactData?.crew_impact?.departments?.length || 0} Department(s) Involved
+              </span>
+            </div>
+            {(!impactData?.departments_detail || impactData.departments_detail.length === 0) ? (
+              <div style={emptyBoxStyle}>
+                <Info size={24} style={{ color: '#38BDF8' }} />
+                <span>No department coordination requirements modeled.</span>
+              </div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table className="enterprise-table">
+                  <thead>
+                    <tr>
+                      <th>Department</th>
+                      <th>No. of Tasks</th>
+                      <th>Crew Involvement</th>
+                      <th>Affected Assets</th>
+                      <th>Planned Window</th>
+                      <th>Coordination Requirement</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {impactData.departments_detail.map((d, idx) => (
+                      <tr key={idx}>
+                        <td><strong style={{ color: 'var(--text-primary, #F5F5F5)' }}>{d.department}</strong></td>
+                        <td style={{ fontWeight: 600, color: 'var(--text-primary, #F5F5F5)' }}>{d.task_count} task(s)</td>
+                        <td style={{ color: '#38BDF8' }}>{d.crews_involved?.join(', ') || 'Department Personnel'}</td>
+                        <td style={{ color: 'var(--text-secondary, #B9BDC4)' }}>{d.affected_assets?.join(', ') || impactData.block_code}</td>
+                        <td style={{ color: 'var(--text-secondary, #B9BDC4)' }}>{d.planned_window}</td>
+                        <td style={{ color: 'var(--text-secondary, #CBD5E1)', fontSize: '11.5px' }}>{d.coordination_requirement}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* TAB 5: RESTRICTED ASSETS & ASSET AVAILABILITY */}
+        {selectedCategoryTab === 'restricted_assets' && (
+          <>
+            <div className="enterprise-card-header">
+              <h3 className="enterprise-card-title">Restricted Infrastructure Assets & Network Availability</h3>
+              <span style={{ fontSize: '12px', color: 'var(--text-secondary, #B9BDC4)' }}>
+                {impactData?.restricted_assets_detail?.length || 0} Restricted Asset(s)
+              </span>
+            </div>
+
+            {/* Asset Availability High-Level Metrics */}
+            {impactData?.asset_impact && (
+              <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border-light, #2A2D32)', background: 'rgba(255, 255, 255, 0.02)' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '10px' }}>
+                  <div style={{ padding: '10px', background: 'var(--bg-card, #151719)', borderRadius: '6px', border: '1px solid var(--border-light, #2A2D32)' }}>
+                    <div style={{ fontSize: '11px', color: 'var(--text-secondary, #94A3B8)' }}>Total Network Assets</div>
+                    <div style={{ fontSize: '18px', fontWeight: 800, color: 'var(--text-primary, #F5F5F5)', marginTop: '2px' }}>
+                      {impactData.asset_impact.total_network_assets}
+                    </div>
+                  </div>
+                  <div style={{ padding: '10px', background: 'var(--bg-card, #151719)', borderRadius: '6px', border: '1px solid var(--border-light, #2A2D32)' }}>
+                    <div style={{ fontSize: '11px', color: 'var(--text-secondary, #94A3B8)' }}>Restricted Assets</div>
+                    <div style={{ fontSize: '18px', fontWeight: 800, color: '#DC2626', marginTop: '2px' }}>
+                      {impactData.asset_impact.restricted_assets}
+                    </div>
+                  </div>
+                  <div style={{ padding: '10px', background: 'var(--bg-card, #151719)', borderRadius: '6px', border: '1px solid var(--border-light, #2A2D32)' }}>
+                    <div style={{ fontSize: '11px', color: 'var(--text-secondary, #94A3B8)' }}>Operational Assets</div>
+                    <div style={{ fontSize: '18px', fontWeight: 800, color: '#10B981', marginTop: '2px' }}>
+                      {impactData.asset_impact.available_assets}
+                    </div>
+                  </div>
+                  <div style={{ padding: '10px', background: 'var(--bg-card, #151719)', borderRadius: '6px', border: '1px solid var(--border-light, #2A2D32)' }}>
+                    <div style={{ fontSize: '11px', color: 'var(--text-secondary, #94A3B8)' }}>Network Availability</div>
+                    <div style={{ fontSize: '18px', fontWeight: 800, color: '#38BDF8', marginTop: '2px' }}>
+                      {impactData.asset_impact.availability_percentage}%
+                    </div>
+                    {impactData.asset_impact.availability_delta !== undefined && impactData.asset_impact.availability_delta !== 0 && (
+                      <div style={{ fontSize: '10px', color: '#D97706', marginTop: '2px' }}>
+                        Delta: {impactData.asset_impact.availability_delta > 0 ? `+${impactData.asset_impact.availability_delta}%` : `${impactData.asset_impact.availability_delta}%`}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                {impactData.asset_impact.note && (
+                  <div style={{ fontSize: '12px', color: 'var(--text-secondary, #CBD5E1)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Info size={14} style={{ color: '#38BDF8' }} />
+                    <span>{impactData.asset_impact.note}</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Restricted assets table */}
+            {(!impactData?.restricted_assets_detail || impactData.restricted_assets_detail.length === 0) ? (
+              <div style={emptyBoxStyle}>
+                <CheckCircle2 size={24} style={{ color: '#10B981' }} />
+                <span>No restricted infrastructure assets for this analysis.</span>
+              </div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table className="enterprise-table">
+                  <thead>
+                    <tr>
+                      <th>Asset Code</th>
+                      <th>Asset Name</th>
+                      <th>Asset Type</th>
+                      <th>Restriction Type</th>
+                      <th>Restriction Window</th>
+                      <th>Reason</th>
+                      <th>Status</th>
+                      <th>Affected Operations</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {impactData.restricted_assets_detail.map((a, idx) => (
+                      <tr key={idx}>
+                        <td><strong style={{ color: 'var(--text-primary, #F5F5F5)' }}>{a.asset_code}</strong></td>
+                        <td style={{ fontWeight: 600, color: 'var(--text-primary, #F5F5F5)' }}>{a.asset_name}</td>
+                        <td style={{ color: 'var(--text-secondary, #B9BDC4)' }}>{a.asset_type}</td>
+                        <td><span className="status-chip warning">{a.restriction_type}</span></td>
+                        <td style={{ color: '#38BDF8', fontWeight: 600 }}>{a.restriction_window}</td>
+                        <td style={{ color: 'var(--text-secondary, #B9BDC4)' }}>{a.reason}</td>
+                        <td><span className="status-chip critical">{a.status}</span></td>
+                        <td style={{ color: 'var(--text-secondary, #CBD5E1)', fontSize: '11.5px' }}>{a.affected_operations}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* TAB 6: SPEED RESTRICTIONS */}
         {selectedCategoryTab === 'speed_restrictions' && (
           <>
             <div className="enterprise-card-header">
               <h3 className="enterprise-card-title">Imposed Caution Orders & Speed Restrictions</h3>
-              <span className="status-chip high" style={{ fontSize: '11px' }}>2 Active Restrictions</span>
+              <span style={{ fontSize: '12px', color: 'var(--text-secondary, #B9BDC4)' }}>
+                {impactData?.speed_restrictions?.length || 0} Caution Order(s)
+              </span>
             </div>
-            <div style={{ overflowX: 'auto' }}>
-              <table className="enterprise-table">
-                <thead>
-                  <tr>
-                    <th>Location / Section</th>
-                    <th>Restriction Type</th>
-                    <th>Permitted Speed</th>
-                    <th>Normal MPS</th>
-                    <th>Cause / Reason</th>
-                    <th>Duration</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td><strong>GNT - BZA KM 24/8 to 26/2</strong></td>
-                    <td><span className="status-chip warning">Temporary Caution</span></td>
-                    <td style={{ color: '#DC2626', fontWeight: 800 }}>30 km/h</td>
-                    <td style={{ color: 'var(--text-secondary, #B9BDC4)' }}>110 km/h</td>
-                    <td style={{ color: 'var(--text-secondary, #B9BDC4)' }}>Deep screening and ballast packing on adjacent track</td>
-                    <td>Until 06:00</td>
-                  </tr>
-                  <tr>
-                    <td><strong>NDK Yard Crossover</strong></td>
-                    <td><span className="status-chip warning">Turnout Caution</span></td>
-                    <td style={{ color: '#D97706', fontWeight: 800 }}>15 km/h</td>
-                    <td style={{ color: 'var(--text-secondary, #B9BDC4)' }}>30 km/h</td>
-                    <td style={{ color: 'var(--text-secondary, #B9BDC4)' }}>Point machine overhaul and tongue rail inspection</td>
-                    <td>Until 05:30</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
+            {(!impactData?.speed_restrictions || impactData.speed_restrictions.length === 0) ? (
+              <div style={emptyBoxStyle}>
+                <CheckCircle2 size={24} style={{ color: '#10B981' }} />
+                <strong style={{ color: 'var(--text-primary, #F5F5F5)' }}>Speed restriction data is not available for this analysis.</strong>
+                <span style={{ fontSize: '12px', color: '#94A3B8' }}>
+                  No post-work caution orders or speed limits are mandated for this maintenance activity.
+                </span>
+              </div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table className="enterprise-table">
+                  <thead>
+                    <tr>
+                      <th>Affected Block / Section</th>
+                      <th>Restriction Speed</th>
+                      <th>Normal MPS</th>
+                      <th>Restriction Window</th>
+                      <th>Reason</th>
+                      <th>Affected Trains</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {impactData.speed_restrictions.map((s, idx) => (
+                      <tr key={idx}>
+                        <td>
+                          <strong style={{ color: 'var(--text-primary, #F5F5F5)' }}>{s.block_code}</strong>
+                          <div style={{ fontSize: '11px', color: 'var(--text-secondary, #94A3B8)' }}>{s.section_name}</div>
+                        </td>
+                        <td style={{ color: '#DC2626', fontWeight: 800 }}>{s.restriction_speed_kmph} km/h</td>
+                        <td style={{ color: 'var(--text-secondary, #B9BDC4)' }}>{s.normal_speed_kmph} km/h</td>
+                        <td style={{ color: '#38BDF8', fontWeight: 600 }}>{s.restriction_window}</td>
+                        <td style={{ color: 'var(--text-secondary, #CBD5E1)', fontSize: '11.5px' }}>{s.reason}</td>
+                        <td style={{ color: '#D97706', fontWeight: 600 }}>{s.affected_trains_count} train(s) regulated</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </>
         )}
 
+        {/* TAB 7: POWER BLOCKS */}
         {selectedCategoryTab === 'power_blocks' && (
           <>
             <div className="enterprise-card-header">
               <h3 className="enterprise-card-title">OHE Traction Power Blocks & Isolations</h3>
-              <span className="status-chip medium" style={{ fontSize: '11px' }}>Electrical TRD Scheduled</span>
+              <span style={{ fontSize: '12px', color: 'var(--text-secondary, #B9BDC4)' }}>
+                {impactData?.power_blocks?.length || 0} Power Block Isolation(s)
+              </span>
             </div>
-            <div style={{ overflowX: 'auto' }}>
-              <table className="enterprise-table">
-                <thead>
-                  <tr>
-                    <th>Substation / Sector</th>
-                    <th>Switching Station</th>
-                    <th>Isolation Boundary</th>
-                    <th>Power Cut Window</th>
-                    <th>Diesel Haulage Feasible</th>
-                    <th>Earthing Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td><strong>GNT TSS 132/25 kV</strong></td>
-                    <td>GNT Sectioning Post</td>
-                    <td style={{ color: 'var(--text-secondary, #B9BDC4)' }}>Mast 24/12 to Mast 31/04</td>
-                    <td style={{ color: '#1F5F9C', fontWeight: 700 }}>02:00 - 04:30 (150 min)</td>
-                    <td><span className="status-chip normal">Yes (Diesel Cleared)</span></td>
-                    <td><span className="status-chip completed">Bonded & Earthed</span></td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
+            {(!impactData?.power_blocks || impactData.power_blocks.length === 0) ? (
+              <div style={emptyBoxStyle}>
+                <CheckCircle2 size={24} style={{ color: '#10B981' }} />
+                <strong style={{ color: 'var(--text-primary, #F5F5F5)' }}>No power-block impact data available for this analysis.</strong>
+                <span style={{ fontSize: '12px', color: '#94A3B8' }}>
+                  Traction power de-energization (OHE isolation) is not required for this maintenance task.
+                </span>
+              </div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table className="enterprise-table">
+                  <thead>
+                    <tr>
+                      <th>Location</th>
+                      <th>Power Block Type</th>
+                      <th>Window</th>
+                      <th>Department</th>
+                      <th>Affected Assets</th>
+                      <th>Operational Effect</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {impactData.power_blocks.map((p, idx) => (
+                      <tr key={idx}>
+                        <td><strong style={{ color: 'var(--text-primary, #F5F5F5)' }}>{p.location}</strong></td>
+                        <td><span className="status-chip warning">{p.power_block_type}</span></td>
+                        <td style={{ color: '#38BDF8', fontWeight: 600 }}>{p.window}</td>
+                        <td><span className="status-chip normal">{p.department}</span></td>
+                        <td style={{ color: 'var(--text-secondary, #B9BDC4)' }}>{p.affected_assets}</td>
+                        <td style={{ color: 'var(--text-secondary, #CBD5E1)', fontSize: '11.5px' }}>{p.operational_effect}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </>
         )}
 
+        {/* TAB 8: SIGNALLING */}
         {selectedCategoryTab === 'signaling' && (
           <>
             <div className="enterprise-card-header">
-              <h3 className="enterprise-card-title">Signaling Interlocking & Route Locking Impact</h3>
-              <span className="status-chip normal" style={{ fontSize: '11px' }}>S&T Coordination</span>
+              <h3 className="enterprise-card-title">Signalling Interlocking & Route Disconnection Impact</h3>
+              <span style={{ fontSize: '12px', color: 'var(--text-secondary, #B9BDC4)' }}>
+                {impactData?.signalling_impacts?.length || 0} Signalling Restriction(s)
+              </span>
             </div>
-            <div style={{ overflowX: 'auto' }}>
-              <table className="enterprise-table">
-                <thead>
-                  <tr>
-                    <th>Interlocking Station</th>
-                    <th>Affected Aspect / Signal</th>
-                    <th>Point Nos.</th>
-                    <th>Panel Mode</th>
-                    <th>Safety Interlock Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td><strong>Guntur Central Relay Room</strong></td>
-                    <td>Home Signal S-2 & Starter S-14</td>
-                    <td>Pts 102A/B</td>
-                    <td><span className="status-chip medium">Non-Interlocked (NI)</span></td>
-                    <td><span className="status-chip completed">Clamped & Padlocked</span></td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
+            {(!impactData?.signalling_impacts || impactData.signalling_impacts.length === 0) ? (
+              <div style={emptyBoxStyle}>
+                <CheckCircle2 size={24} style={{ color: '#10B981' }} />
+                <strong style={{ color: 'var(--text-primary, #F5F5F5)' }}>No signaling impact data available for this analysis.</strong>
+                <span style={{ fontSize: '12px', color: '#94A3B8' }}>
+                  Track circuits, axle counters, and route interlockings operate normally during this window.
+                </span>
+              </div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table className="enterprise-table">
+                  <thead>
+                    <tr>
+                      <th>Affected Signalling Asset</th>
+                      <th>Location</th>
+                      <th>Restriction</th>
+                      <th>Window</th>
+                      <th>Dependent Maintenance</th>
+                      <th>Operational Effect</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {impactData.signalling_impacts.map((sig, idx) => (
+                      <tr key={idx}>
+                        <td><strong style={{ color: 'var(--text-primary, #F5F5F5)' }}>{sig.signalling_asset}</strong></td>
+                        <td style={{ color: 'var(--text-secondary, #B9BDC4)' }}>{sig.location}</td>
+                        <td><span className="status-chip critical">{sig.restriction}</span></td>
+                        <td style={{ color: '#38BDF8', fontWeight: 600 }}>{sig.window}</td>
+                        <td style={{ color: '#38BDF8' }}>{sig.dependent_maintenance}</td>
+                        <td style={{ color: 'var(--text-secondary, #CBD5E1)', fontSize: '11.5px' }}>{sig.operational_effect}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </>
         )}
+
+        {/* TAB 9: DEPENDENCIES */}
+        {selectedCategoryTab === 'dependencies' && (
+          <>
+            <div className="enterprise-card-header">
+              <h3 className="enterprise-card-title">Dependent Maintenance Tasks & Succession Chain</h3>
+              <span style={{ fontSize: '12px', color: 'var(--text-secondary, #B9BDC4)' }}>
+                {impactData?.dependency_impact?.dependency_chain?.length || 0} Task Link(s)
+              </span>
+            </div>
+
+            {/* Dependency High-Level Summary */}
+            {impactData?.dependency_impact && (
+              <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border-light, #2A2D32)', background: 'rgba(255, 255, 255, 0.02)' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '12px', marginBottom: '10px' }}>
+                  <div style={{ padding: '10px', background: 'var(--bg-card, #151719)', borderRadius: '6px', border: '1px solid var(--border-light, #2A2D32)' }}>
+                    <div style={{ fontSize: '11px', color: 'var(--text-secondary, #94A3B8)' }}>Prerequisites Status</div>
+                    <div style={{ fontSize: '15px', fontWeight: 700, color: impactData.dependency_impact.has_prerequisites ? '#D97706' : '#10B981', marginTop: '2px' }}>
+                      {impactData.dependency_impact.has_prerequisites
+                        ? `${impactData.dependency_impact.prerequisite_tasks_count} Prerequisite Task(s) Required`
+                        : 'No Prerequisites (Independent Task)'}
+                    </div>
+                  </div>
+
+                  <div style={{ padding: '10px', background: 'var(--bg-card, #151719)', borderRadius: '6px', border: '1px solid var(--border-light, #2A2D32)' }}>
+                    <div style={{ fontSize: '11px', color: 'var(--text-secondary, #94A3B8)' }}>Downstream Impact</div>
+                    <div style={{ fontSize: '15px', fontWeight: 700, color: impactData.dependency_impact.blocks_downstream ? '#EF4444' : '#10B981', marginTop: '2px' }}>
+                      {impactData.dependency_impact.blocks_downstream
+                        ? `Blocks ${impactData.dependency_impact.downstream_tasks_count} Downstream Task(s)`
+                        : 'No Downstream Tasks Blocked'}
+                    </div>
+                  </div>
+                </div>
+
+                {impactData.dependency_impact.dependency_notes && impactData.dependency_impact.dependency_notes.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '6px' }}>
+                    {impactData.dependency_impact.dependency_notes.map((note, nIdx) => (
+                      <div key={nIdx} style={{ fontSize: '12px', color: 'var(--text-secondary, #CBD5E1)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <Info size={14} style={{ color: '#38BDF8', flexShrink: 0 }} />
+                        <span>{note}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Dependency chain table */}
+            {(!impactData?.dependency_impact?.dependency_chain || impactData.dependency_impact.dependency_chain.length === 0) ? (
+              <div style={emptyBoxStyle}>
+                <CheckCircle2 size={24} style={{ color: '#10B981' }} />
+                <strong style={{ color: 'var(--text-primary, #F5F5F5)' }}>No modeled dependencies for this maintenance activity.</strong>
+                <span style={{ fontSize: '12px', color: '#94A3B8' }}>
+                  This task can be executed independently without waiting for or blocking other railway maintenance activities.
+                </span>
+              </div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table className="enterprise-table">
+                  <thead>
+                    <tr>
+                      <th>Prerequisite Task</th>
+                      <th>Dependent Task</th>
+                      <th>Dependency Relationship</th>
+                      <th>Sequence Step</th>
+                      <th>Status / Requirement</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {impactData.dependency_impact.dependency_chain.map((d, idx) => (
+                      <tr key={idx}>
+                        <td>
+                          <strong style={{ color: 'var(--text-primary, #F5F5F5)' }}>Task #{d.prerequisite_id}</strong>
+                          <div style={{ fontSize: '11px', color: 'var(--text-secondary, #94A3B8)' }}>{d.prerequisite_title}</div>
+                        </td>
+                        <td>
+                          <strong style={{ color: '#38BDF8' }}>Task #{d.dependent_id}</strong>
+                          <div style={{ fontSize: '11px', color: 'var(--text-secondary, #94A3B8)' }}>{d.dependent_title}</div>
+                        </td>
+                        <td><span className="status-chip normal">{d.relation_type}</span></td>
+                        <td style={{ color: 'var(--text-secondary, #B9BDC4)' }}>Step {idx + 1}</td>
+                        <td>
+                          <span className="status-chip warning">
+                            Prerequisite must complete before dependent task starts
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+
       </div>
+
+      {/* 5. OPERATIONAL OVERVIEW, TRAFFIC & WINDOW CONTEXT */}
+      {impactData && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '14px', marginTop: '16px' }}>
+          
+          {/* Operational Explanation Card */}
+          <div className="enterprise-card" style={{ padding: '16px', background: 'var(--bg-card, #151719)', border: '1px solid var(--border-light, #2A2D32)', borderRadius: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+              <div style={{ fontSize: '11px', fontWeight: 800, color: '#38BDF8', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                Operational Summary & Derivation
+              </div>
+              <span className={`status-chip ${impactData.impact_level === 'High' ? 'critical' : impactData.impact_level === 'Moderate' ? 'warning' : 'completed'}`}>
+                {impactData.impact_level} Impact
+              </span>
+            </div>
+            <p style={{ fontSize: '12.5px', color: 'var(--text-primary, #E2E8F0)', lineHeight: '1.5', margin: '0 0 10px 0' }}>
+              {impactData.explanation}
+            </p>
+            {impactData.impact_level_explanation && (
+              <div style={{ fontSize: '11.5px', color: 'var(--text-secondary, #94A3B8)', background: 'rgba(255, 255, 255, 0.03)', padding: '8px 10px', borderRadius: '4px', border: '1px solid var(--border-light, #2A2D32)' }}>
+                {impactData.impact_level_explanation}
+              </div>
+            )}
+          </div>
+
+          {/* Traffic Load & Maintenance Window Details */}
+          <div className="enterprise-card" style={{ padding: '16px', background: 'var(--bg-card, #151719)', border: '1px solid var(--border-light, #2A2D32)', borderRadius: '8px' }}>
+            <div style={{ fontSize: '11px', fontWeight: 800, color: '#38BDF8', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '10px' }}>
+              Route Traffic & Maintenance Window
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '10px', marginBottom: '10px' }}>
+              <div style={{ padding: '8px 10px', background: 'var(--bg-table, #121416)', borderRadius: '4px', border: '1px solid var(--border-light, #2A2D32)' }}>
+                <div style={{ fontSize: '10.5px', color: 'var(--text-secondary, #94A3B8)' }}>Route Traffic Level</div>
+                <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary, #F5F5F5)', marginTop: '2px' }}>
+                  {impactData.traffic_impact?.overall_traffic_level || 'Low'} (Score: {impactData.traffic_impact?.total_traffic_score || 0})
+                </div>
+              </div>
+
+              <div style={{ padding: '8px 10px', background: 'var(--bg-table, #121416)', borderRadius: '4px', border: '1px solid var(--border-light, #2A2D32)' }}>
+                <div style={{ fontSize: '10.5px', color: 'var(--text-secondary, #94A3B8)' }}>Possession Duration</div>
+                <div style={{ fontSize: '13px', fontWeight: 700, color: '#38BDF8', marginTop: '2px' }}>
+                  {impactData.maintenance_window_impact?.duration_minutes || impactData.duration_minutes || 0} minutes
+                </div>
+              </div>
+            </div>
+
+            <div style={{ fontSize: '12px', color: 'var(--text-secondary, #CBD5E1)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <div>
+                <strong style={{ color: 'var(--text-primary, #F5F5F5)' }}>Planned Slot: </strong>
+                {formatDateTime(impactData.maintenance_window_impact?.planned_start)} to {formatDateTime(impactData.maintenance_window_impact?.planned_end)}
+              </div>
+              <div>
+                <strong style={{ color: 'var(--text-primary, #F5F5F5)' }}>Window Type: </strong>
+                {impactData.maintenance_window_impact?.is_coordinated_bundle ? 'Coordinated Multi-Department Bundle' : 'Single Corridor Possession'}
+              </div>
+              {impactData.traffic_impact?.operational_impact_indicators && impactData.traffic_impact.operational_impact_indicators.length > 0 && (
+                <div style={{ marginTop: '4px', fontSize: '11px', color: '#94A3B8' }}>
+                  Indicators: {impactData.traffic_impact.operational_impact_indicators.join(' • ')}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Baseline vs Optimized Comparison (when available) */}
+          {impactData.baseline_vs_optimized && (
+            <div className="enterprise-card" style={{ padding: '16px', background: 'var(--bg-card, #151719)', border: '1px solid var(--border-light, #2A2D32)', borderRadius: '8px', gridColumn: '1 / -1' }}>
+              <div style={{ fontSize: '11px', fontWeight: 800, color: '#38BDF8', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '10px' }}>
+                Optimization Benefit (Baseline vs Coordinated Window)
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '10px' }}>
+                <div style={{ padding: '8px 12px', background: 'var(--bg-table, #121416)', borderRadius: '4px', border: '1px solid var(--border-light, #2A2D32)' }}>
+                  <div style={{ fontSize: '11px', color: 'var(--text-secondary, #94A3B8)' }}>Train Conflicts</div>
+                  <div style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary, #F5F5F5)', marginTop: '2px' }}>
+                    {impactData.baseline_vs_optimized.train_conflicts_before ?? '—'} ➔ <span style={{ color: '#10B981' }}>{impactData.baseline_vs_optimized.train_conflicts_after ?? '0'}</span>
+                  </div>
+                </div>
+                <div style={{ padding: '8px 12px', background: 'var(--bg-table, #121416)', borderRadius: '4px', border: '1px solid var(--border-light, #2A2D32)' }}>
+                  <div style={{ fontSize: '11px', color: 'var(--text-secondary, #94A3B8)' }}>Possession Duration</div>
+                  <div style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary, #F5F5F5)', marginTop: '2px' }}>
+                    {impactData.baseline_vs_optimized.maintenance_duration_before ?? '—'}m ➔ <span style={{ color: '#10B981' }}>{impactData.baseline_vs_optimized.maintenance_duration_after ?? '—'}m</span>
+                  </div>
+                </div>
+                <div style={{ padding: '8px 12px', background: 'var(--bg-table, #121416)', borderRadius: '4px', border: '1px solid var(--border-light, #2A2D32)' }}>
+                  <div style={{ fontSize: '11px', color: 'var(--text-secondary, #94A3B8)' }}>Block Closures</div>
+                  <div style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary, #F5F5F5)', marginTop: '2px' }}>
+                    {impactData.baseline_vs_optimized.restricted_blocks_before ?? '—'} ➔ <span style={{ color: '#10B981' }}>{impactData.baseline_vs_optimized.restricted_blocks_after ?? '1'}</span>
+                  </div>
+                </div>
+                <div style={{ padding: '8px 12px', background: 'var(--bg-table, #121416)', borderRadius: '4px', border: '1px solid var(--border-light, #2A2D32)' }}>
+                  <div style={{ fontSize: '11px', color: 'var(--text-secondary, #94A3B8)' }}>Available Network Assets</div>
+                  <div style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary, #F5F5F5)', marginTop: '2px' }}>
+                    {impactData.baseline_vs_optimized.available_assets_before ?? '—'} ➔ <span style={{ color: '#10B981' }}>{impactData.baseline_vs_optimized.available_assets_after ?? '—'}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+        </div>
+      )}
+
+      {/* 6. DATA SOURCE TRANSPARENCY FOOTNOTE */}
+      <div style={{ marginTop: '14px', padding: '10px 14px', borderRadius: '6px', background: 'rgba(255, 255, 255, 0.02)', border: '1px solid var(--border-light, #2A2D32)', fontSize: '11.5px', color: 'var(--text-secondary, #94A3B8)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <Info size={14} style={{ color: '#38BDF8', flexShrink: 0 }} />
+        <span>
+          Impact metrics are calculated from available RailSync AI database records and modeled operational constraints. Predictive maintenance indicators reflect ML degradation models; train conflicts and block possessions reflect actual scheduled timetable data.
+        </span>
+      </div>
+
     </div>
   )
 }

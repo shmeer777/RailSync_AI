@@ -68,7 +68,30 @@ export interface AssetAvailabilityResponse {
   optimization_status: string
   explanation: string
   human_approval_required: boolean
+  approved?: boolean
+  approved_at?: string | null
+  approved_by?: string | null
   decision_support_note: string
+}
+
+export interface AssetAvailabilityApproveRequest {
+  planning_window?: string
+  stagger_multi_blocks?: boolean
+  target_block_codes?: string[] | null
+  start_time?: string | null
+  approved_by?: string
+  human_approved?: boolean
+}
+
+export interface AssetAvailabilityApproveResponse {
+  status: string
+  message: string
+  approved_at: string
+  approved_by: string
+  human_approval_required: boolean
+  human_approval_completed: boolean
+  updated_tasks_count: number
+  planning_window: string
 }
 
 export interface AssetAvailabilityOptimizeRequest {
@@ -159,3 +182,51 @@ export async function optimizeAssetAvailability(
     throw err
   }
 }
+
+/**
+ * Approve the optimized asset availability schedule and apply to database.
+ */
+export async function approveAssetAvailabilitySchedule(
+  payload: AssetAvailabilityApproveRequest = {},
+  timeoutMs: number = 30000
+): Promise<AssetAvailabilityApproveResponse> {
+  const url = `${API_BASE_URL}/ai/asset-availability/approve`
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        planning_window: payload.planning_window || 'night',
+        stagger_multi_blocks: payload.stagger_multi_blocks ?? true,
+        target_block_codes: payload.target_block_codes ?? null,
+        start_time: payload.start_time ?? null,
+        approved_by: payload.approved_by || 'Section Controller',
+        human_approved: payload.human_approved ?? true,
+      }),
+      signal: controller.signal,
+    })
+    clearTimeout(timer)
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}))
+      throw new Error(
+        errorData.detail || `Approval failed with status ${response.status}`
+      )
+    }
+
+    return response.json()
+  } catch (err: any) {
+    clearTimeout(timer)
+    if (err.name === 'AbortError') {
+      throw new Error(
+        'Approval request timed out. Please retry.'
+      )
+    }
+    throw err
+  }
+}
+

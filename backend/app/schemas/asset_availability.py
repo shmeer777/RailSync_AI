@@ -66,6 +66,9 @@ class AssetAvailabilityResponse(BaseModel):
     optimization_status: str = "OPTIMAL"
     explanation: str
     human_approval_required: bool = True
+    approved: bool = False
+    approved_at: str | None = None
+    approved_by: str | None = None
     decision_support_note: str = (
         "Decision-Support Prototype: Modeled asset availability reflects simulated "
         "operational conditions. Authorized railway section controllers must review and "
@@ -78,3 +81,24 @@ class AssetAvailabilityOptimizeRequest(BaseModel):
     target_block_codes: list[str] | None = None
     start_time: str | None = None
     stagger_multi_blocks: bool = True
+
+
+class AssetAvailabilityApproveRequest(BaseModel):
+    planning_window: str = "night"
+    stagger_multi_blocks: bool = True
+    target_block_codes: list[str] | None = None
+    start_time: str | None = None
+    approved_by: str = "Section Controller"
+    human_approved: bool = Field(default=True, description="Explicit human controller confirmation")
+
+
+class AssetAvailabilityApproveResponse(BaseModel):
+    status: str = "approved"
+    message: str = "Asset availability schedule approved and applied successfully."
+    approved_at: str
+    approved_by: str = "Section Controller"
+    human_approval_required: bool = True
+    human_approval_completed: bool = True
+    updated_tasks_count: int = 0
+    planning_window: str = "night"
+

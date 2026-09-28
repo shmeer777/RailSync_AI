@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from typing import Any
 import math
 
+from fastapi import HTTPException
 from ortools.sat.python import cp_model
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -29,6 +30,8 @@ from app.models.crew import Crew
 from app.models.maintenance import Maintenance
 from app.models.train import Train
 from app.schemas.asset_availability import (
+    AssetAvailabilityApproveRequest,
+    AssetAvailabilityApproveResponse,
     AssetAvailabilityOptimizeRequest,
     AssetAvailabilityResponse,
     AvailabilityImpact,
@@ -71,6 +74,12 @@ def _parse_start_time(time_str: str | None, base_dt: datetime | None = None) -> 
 
 _ASSET_AVAILABILITY_CACHE: dict[str, tuple[float, AssetAvailabilityResponse]] = {}
 _CACHE_TTL_SECONDS = 60.0
+_LATEST_APPROVAL_STATE: dict[str, Any] = {
+    "approved": False,
+    "approved_at": None,
+    "approved_by": None,
+    "cache_key": None,
+}
 
 
 def calculate_asset_availability(
@@ -216,6 +225,28 @@ def calculate_asset_availability(
         time_saved_minutes=time_saved,
     )
 
+    is_approved = False
+    approved_by = None
+    approved_at = None
+
+    if _LATEST_APPROVAL_STATE.get("approved") and _LATEST_APPROVAL_STATE.get("cache_key") == cache_key:
+        is_approved = True
+        approved_by = _LATEST_APPROVAL_STATE.get("approved_by")
+        approved_at = _LATEST_APPROVAL_STATE.get("approved_at")
+    elif not force_refresh:
+        db_approved_note = db.scalar(
+            select(Maintenance.dependency_note)
+            .where(Maintenance.dependency_note.like("%Approved via Asset Availability%"))
+            .order_by(Maintenance.id.desc())
+        )
+        if db_approved_note:
+            import re
+            m = re.search(r"Approved via Asset Availability Optimization by (.+) at (.+)", db_approved_note)
+            if m:
+                is_approved = True
+                approved_by = m.group(1).strip()
+                approved_at = m.group(2).strip()
+
     res = AssetAvailabilityResponse(
         total_assets=total_assets,
         planning_window=window_pref,
@@ -227,6 +258,9 @@ def calculate_asset_availability(
         optimization_status=opt_status,
         explanation=explanation,
         human_approval_required=True,
+        approved=is_approved,
+        approved_at=approved_at,
+        approved_by=approved_by,
     )
 
     if not is_sqlite_test:
@@ -890,3 +924,102 @@ def _generate_explanation(
         parts.append(f"Windows were aligned to minimize disruption to active routes ({total_conflicts} modeled conflict(s)).")
 
     return " ".join(parts)
+
+
+def approve_asset_availability_schedule(
+    db: Session,
+    request: AssetAvailabilityApproveRequest,
+) -> AssetAvailabilityApproveResponse:
+    """
+    Validates that a feasible CP-SAT asset availability schedule exists,
+    confirms explicit human approval, updates the affected maintenance tasks
+    in the database to 'Scheduled' with their optimized window times, and records approval.
+    """
+    if not request.human_approved:
+        raise HTTPException(
+            status_code=400,
+            detail="Human approval is strictly required before approving an asset availability schedule.",
+        )
+
+    # 1. Obtain current optimization result
+    opt_req = AssetAvailabilityOptimizeRequest(
+        planning_window=request.planning_window,
+        stagger_multi_blocks=request.stagger_multi_blocks,
+        target_block_codes=request.target_block_codes,
+        start_time=request.start_time,
+    )
+    opt_res = calculate_asset_availability(db=db, request=opt_req)
+
+    # 2. Validation
+    if not opt_res or not opt_res.optimized:
+        raise HTTPException(
+            status_code=400,
+            detail="No valid optimized schedule is available for approval.",
+        )
+
+    status_upper = str(opt_res.optimization_status).upper()
+    if status_upper not in ("OPTIMAL", "FEASIBLE"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot approve schedule: solver status is '{opt_res.optimization_status}'. Must be OPTIMAL or FEASIBLE.",
+        )
+
+    restricted_blocks = opt_res.optimized.restricted_blocks
+    if not restricted_blocks:
+        raise HTTPException(
+            status_code=400,
+            detail="No valid maintenance tasks found in the optimized schedule to approve.",
+        )
+
+    now_iso = datetime.now().isoformat()
+    updated_count = 0
+
+    # 3. Apply schedule to database records
+    for rb in restricted_blocks:
+        start_dt = datetime.fromisoformat(rb.start_time) if rb.start_time else None
+        end_dt = datetime.fromisoformat(rb.end_time) if rb.end_time else None
+
+        for t in rb.tasks:
+            t_id = t.get("id")
+            if not t_id:
+                continue
+            db_task = db.get(Maintenance, t_id)
+            if db_task:
+                db_task.status = "Scheduled"
+                if start_dt:
+                    db_task.scheduled_start = start_dt
+                if end_dt:
+                    db_task.scheduled_end = end_dt
+                db_task.dependency_note = (
+                    f"Approved via Asset Availability Optimization by {request.approved_by} at {now_iso}"
+                )
+                db_task.bundle_id = f"AVAIL-{request.planning_window.upper()}-{rb.block_code}"
+                updated_count += 1
+
+    db.commit()
+
+    # 4. Invalidate / update cache
+    target_keys = sorted(request.target_block_codes or [])
+    cache_key = f"{request.planning_window}:{request.stagger_multi_blocks}:{request.start_time}:{','.join(target_keys)}"
+
+    _LATEST_APPROVAL_STATE["approved"] = True
+    _LATEST_APPROVAL_STATE["approved_at"] = now_iso
+    _LATEST_APPROVAL_STATE["approved_by"] = request.approved_by
+    _LATEST_APPROVAL_STATE["cache_key"] = cache_key
+
+    opt_res.approved = True
+    opt_res.approved_at = now_iso
+    opt_res.approved_by = request.approved_by
+    _ASSET_AVAILABILITY_CACHE[cache_key] = (datetime.now().timestamp(), opt_res)
+
+    return AssetAvailabilityApproveResponse(
+        status="approved",
+        message=f"Asset availability schedule approved successfully. Updated {updated_count} task(s).",
+        approved_at=now_iso,
+        approved_by=request.approved_by,
+        human_approval_required=True,
+        human_approval_completed=True,
+        updated_tasks_count=updated_count,
+        planning_window=request.planning_window,
+    )
+

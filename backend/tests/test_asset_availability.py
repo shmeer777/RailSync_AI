@@ -309,4 +309,30 @@ def test_api_get_and_post_asset_availability(in_memory_db):
     assert post_data["total_assets"] == 6
     assert len(post_data["optimized"]["restricted_blocks"]) == 2
 
+    # POST approve endpoint without human confirmation (fails)
+    fail_res = client.post(
+        "/ai/asset-availability/approve",
+        json={"planning_window": "night", "human_approved": False},
+    )
+    assert fail_res.status_code == 400
+    assert "Human approval is strictly required" in fail_res.json()["detail"]
+
+    # POST approve endpoint with human confirmation (succeeds)
+    approve_res = client.post(
+        "/ai/asset-availability/approve",
+        json={
+            "planning_window": "night",
+            "stagger_multi_blocks": True,
+            "approved_by": "Chief Controller Sharma",
+            "human_approved": True,
+        },
+    )
+    assert approve_res.status_code == 200
+    approve_data = approve_res.json()
+    assert approve_data["status"] == "approved"
+    assert approve_data["approved_by"] == "Chief Controller Sharma"
+    assert approve_data["human_approval_completed"] is True
+    assert approve_data["updated_tasks_count"] > 0
+
     app.dependency_overrides.clear()
+

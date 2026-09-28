@@ -558,6 +558,8 @@ def apply_crew_work_queue(
 # ------------------------------------------------------------
 
 from app.schemas.asset_availability import (
+    AssetAvailabilityApproveRequest,
+    AssetAvailabilityApproveResponse,
     AssetAvailabilityOptimizeRequest,
     AssetAvailabilityResponse,
 )
@@ -604,6 +606,24 @@ def optimize_network_asset_availability(
     from app.services.ai.asset_availability import calculate_asset_availability
 
     return calculate_asset_availability(db=db, request=payload, force_refresh=True)
+
+
+@router.post(
+    "/asset-availability/approve",
+    response_model=AssetAvailabilityApproveResponse,
+    summary="Approve Network Asset Availability Schedule",
+    description=(
+        "Explicitly approves and applies the CP-SAT optimized asset availability schedule to live maintenance records. "
+        "Requires human confirmation by an authorized railway section controller."
+    ),
+)
+def approve_network_asset_availability(
+    payload: AssetAvailabilityApproveRequest,
+    db: Session = Depends(get_db),
+):
+    from app.services.ai.asset_availability import approve_asset_availability_schedule
+
+    return approve_asset_availability_schedule(db=db, request=payload)
 
 
 # ------------------------------------------------------------

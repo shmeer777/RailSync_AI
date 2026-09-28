@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 
 import {
+  approveAssetAvailabilitySchedule,
   fetchAssetAvailability,
   optimizeAssetAvailability,
   type AssetAvailabilityResponse,
@@ -40,6 +41,12 @@ export default function AssetAvailabilitySection({
   const [error, setError] = useState<string | null>(null)
   const [isSlow, setIsSlow] = useState(false)
   const [isVerySlow, setIsVerySlow] = useState(false)
+
+  // Approval State
+  const [approving, setApproving] = useState(false)
+  const [approved, setApproved] = useState(false)
+  const [approvalMessage, setApprovalMessage] = useState<string | null>(null)
+  const [approvalError, setApprovalError] = useState<string | null>(null)
 
   const requestIdRef = useRef(0)
 
@@ -97,10 +104,26 @@ export default function AssetAvailabilitySection({
     void loadAvailability()
   }, [loadAvailability])
 
+  useEffect(() => {
+    if (data?.approved) {
+      setApproved(true)
+      if (data.approved_at) {
+        const timeStr = new Date(data.approved_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        setApprovalMessage(
+          `Schedule approved by ${data.approved_by || 'Section Controller'} at ${timeStr}.`
+        )
+      }
+    } else {
+      setApproved(false)
+      setApprovalMessage(null)
+    }
+  }, [data?.approved, data?.approved_at, data?.approved_by])
+
   const handleReoptimize = async () => {
     try {
       setOptimizing(true)
       setError(null)
+      setApprovalError(null)
 
       const payload = {
         planning_window: planningWindow,
@@ -110,10 +133,57 @@ export default function AssetAvailabilitySection({
 
       const result = await optimizeAssetAvailability(payload)
       setData(result)
+      if (!result.approved) {
+        setApproved(false)
+        setApprovalMessage(null)
+      }
     } catch (err: any) {
       setError(err.message || 'Failed to re-optimize asset availability.')
     } finally {
       setOptimizing(false)
+    }
+  }
+
+  const handleApprove = async () => {
+    if (approving || approved) return
+
+    // Step 8 Validation
+    if (!data || !data.optimized) {
+      setApprovalError('No valid optimized schedule is available for approval.')
+      return
+    }
+
+    const status = String(data.optimization_status || '').toUpperCase()
+    if (status !== 'OPTIMAL' && status !== 'FEASIBLE') {
+      setApprovalError(`Cannot approve schedule: solver status is '${data.optimization_status}'. Must be OPTIMAL or FEASIBLE.`)
+      return
+    }
+
+    if (!data.optimized.restricted_blocks || data.optimized.restricted_blocks.length === 0) {
+      setApprovalError('No maintenance tasks found in the optimized schedule to approve.')
+      return
+    }
+
+    setApproving(true)
+    setApprovalError(null)
+
+    try {
+      const res = await approveAssetAvailabilitySchedule({
+        planning_window: planningWindow,
+        stagger_multi_blocks: staggerEnabled,
+        target_block_codes: selectedBlockFilter !== 'all' ? [selectedBlockFilter] : null,
+        approved_by: 'Section Controller',
+        human_approved: true,
+      })
+
+      setApproved(true)
+      setApprovalMessage(res.message || 'Asset availability schedule approved successfully.')
+      onPlanApproved?.()
+    } catch (err: any) {
+      setApprovalError(err.message || 'Failed to approve schedule.')
+      setApproved(false)
+    } finally {
+      setApproving(false)
     }
   }
 
@@ -330,27 +400,103 @@ export default function AssetAvailabilitySection({
 
         <button
           type="button"
-          onClick={() => onPlanApproved?.()}
+          onClick={handleApprove}
+          disabled={approving || approved}
           style={{
             height: '38px',
             padding: '0 18px',
             borderRadius: '8px',
-            background: '#10B981',
-            border: '1px solid #059669',
+            background: approved ? '#059669' : '#10B981',
+            border: approved ? '1px solid #047857' : '1px solid #059669',
             color: '#FFFFFF',
             fontSize: '13px',
             fontWeight: 700,
-            cursor: 'pointer',
+            cursor: approved ? 'default' : approving ? 'not-allowed' : 'pointer',
             display: 'inline-flex',
             alignItems: 'center',
             gap: '8px',
             boxShadow: '0 1px 3px rgba(16, 185, 129, 0.2)',
+            opacity: approving ? 0.8 : 1,
+            transition: 'all 0.15s ease',
+          }}
+        >
+          {approving ? (
+            <>
+              <RefreshCw size={16} style={{ animation: 'spin 1s linear infinite' }} />
+              Approving...
+            </>
+          ) : approved ? (
+            <>
+              <CheckCircle2 size={16} />
+              ✓ Schedule Approved
+            </>
+          ) : (
+            <>
+              <CheckCircle2 size={16} />
+              Approve Schedule
+            </>
+          )}
+        </button>
+      </div>
+
+      {/* APPROVAL STATUS FEEDBACK */}
+      {approvalMessage && (
+        <div
+          style={{
+            padding: '10px 14px',
+            borderRadius: '8px',
+            background: 'rgba(16, 185, 129, 0.12)',
+            border: '1px solid rgba(16, 185, 129, 0.35)',
+            color: '#10B981',
+            fontSize: '12.5px',
+            fontWeight: 600,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
           }}
         >
           <CheckCircle2 size={16} />
-          Approve Schedule
-        </button>
-      </div>
+          <span>{approvalMessage}</span>
+        </div>
+      )}
+
+      {approvalError && (
+        <div
+          style={{
+            padding: '10px 14px',
+            borderRadius: '8px',
+            background: 'rgba(239, 68, 68, 0.12)',
+            border: '1px solid rgba(239, 68, 68, 0.35)',
+            color: '#EF4444',
+            fontSize: '12.5px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '8px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <AlertTriangle size={16} />
+            <span>{approvalError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={handleApprove}
+            disabled={approving}
+            style={{
+              background: 'transparent',
+              border: '1px solid rgba(239, 68, 68, 0.5)',
+              color: '#EF4444',
+              borderRadius: '4px',
+              padding: '2px 8px',
+              fontSize: '11px',
+              cursor: 'pointer',
+            }}
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       {/* 2. CONTROLS BAR (WHITE CARD) */}
       <div

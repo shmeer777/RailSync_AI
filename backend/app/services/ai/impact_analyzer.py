@@ -33,11 +33,16 @@ from app.schemas.impact import (
     BlockImpact,
     CrewImpact,
     CrewMemberImpact,
+    DepartmentImpactItem,
     DependencyImpact,
     DependencyRelation,
     ImpactSummary,
     MaintenanceImpactResponse,
     MaintenanceWindowImpact,
+    PowerBlockItem,
+    RestrictedAssetItem,
+    SignallingImpactItem,
+    SpeedRestrictionItem,
     TrafficImpact,
     TrainConflictItem,
     TrainImpact,
@@ -257,17 +262,22 @@ def analyze_task_impact(
             t_rec = db.scalar(select(Train).where(Train.train_number == t_num))
 
             conflicts.append({
-                "train_id": tr.get("train_id"),
+                "train_id": tr.get("train_id") or (t_rec.id if t_rec else None),
                 "train_number": t_num,
                 "train_name": t_rec.name if t_rec else tr.get("name", f"Train {t_num}"),
-                "current_station": t_rec.current_station_code if t_rec else None,
+                "train_type": t_rec.train_type if t_rec else (tr.get("train_type") or "Express"),
+                "source_station": t_rec.source_station_code if t_rec else None,
+                "destination_station": t_rec.destination_station_code if t_rec else None,
+                "current_station": t_rec.current_station_code if t_rec else (t_rec.source_station_code if t_rec else None),
+                "direction": t_rec.direction if t_rec else "UP",
                 "affected_block": norm_block or "N/A",
                 "conflict_type": "Schedule Overlap",
-                "priority": tr.get("priority"),
+                "priority": tr.get("priority") or (t_rec.priority if t_rec else "Normal"),
+                "status": t_rec.status if t_rec else "SCHEDULED",
                 "eta_minute": eta,
                 "depart_minute": dep,
                 "delay_minutes": None,  # Modeled: no fabricated delay
-                "conflict_severity": "High" if str(tr.get("priority")).lower() in ("critical", "high") else "Medium",
+                "conflict_severity": "High" if str(tr.get("priority") or (t_rec.priority if t_rec else "")).lower() in ("critical", "high") else "Medium",
                 "recommendation": "Hold at previous station or route via alternate line during window.",
             })
 
@@ -290,10 +300,13 @@ def analyze_task_impact(
             "department": task.assigned_crew.department,
             "crew_type": task.assigned_crew.crew_type,
             "assigned_task_ids": [task.id],
-            "required_crew_size": task.crew_size,
+            "required_crew_size": task.crew_size or 2,
             "available_capacity": task.assigned_crew.capacity,
             "tasks_assigned_count": 1,
-            "workload_notes": f"Assigned to Task #{task.id} (crew size {task.crew_size} within capacity {task.assigned_crew.capacity})",
+            "location": norm_block or task.station_code or "Corridor",
+            "availability": task.assigned_crew.status or "Available",
+            "scheduled_window": f"{start_dt.strftime('%H:%M')}–{end_dt.strftime('%H:%M')}",
+            "workload_notes": f"Assigned to Task #{task.id} (crew size {task.crew_size or 2} within capacity {task.assigned_crew.capacity})",
         })
     elif task.crew_type:
         crews_involved.append({
@@ -305,6 +318,9 @@ def analyze_task_impact(
             "required_crew_size": task.crew_size or 2,
             "available_capacity": task.crew_size or 2,
             "tasks_assigned_count": 1,
+            "location": norm_block or task.station_code or "Corridor",
+            "availability": "Pending Assignment",
+            "scheduled_window": f"{start_dt.strftime('%H:%M')}–{end_dt.strftime('%H:%M')}",
             "workload_notes": f"Unassigned crew requirement of {task.crew_size or 2} personnel for Task #{task.id}",
         })
 
@@ -451,6 +467,90 @@ def analyze_task_impact(
         impact_level=impact_level,
     )
 
+    # 11b. Cross-functional domain impacts (Speed Restrictions, Power Blocks, Signalling, Departments, Restricted Assets)
+    maint_lower = (task.maintenance_type or "").lower()
+    dept_lower = (task.department or "").lower()
+
+    speed_restrictions: list[SpeedRestrictionItem] = []
+    if any(k in maint_lower for k in ["track", "tamping", "rail", "sleeper", "ballast", "deep screening", "welding"]) or "engineering" in dept_lower or "civil" in dept_lower:
+        speed_restrictions.append(
+            SpeedRestrictionItem(
+                block_code=norm_block or task.station_code or "N/A",
+                section_name=block.name if block else (task.station_code or "Section"),
+                restriction_speed_kmph=30,
+                normal_speed_kmph=100,
+                restriction_window=maint_window.restricted_period,
+                reason=f"Post-maintenance caution order following {task.maintenance_type}",
+                affected_trains_count=len(unique_train_numbers),
+            )
+        )
+
+    power_blocks: list[PowerBlockItem] = []
+    if any(k in maint_lower for k in ["ohe", "power", "electrical", "traction", "catenary", "substation", "pantograph"]) or "electrical" in dept_lower or "trd" in dept_lower:
+        power_blocks.append(
+            PowerBlockItem(
+                location=norm_block or task.station_code or "N/A",
+                power_block_type="OHE 25kV AC Traction Power Isolation",
+                window=maint_window.restricted_period,
+                department="Electrical (TRD)",
+                affected_assets=f"Overhead Equipment (OHE) section {norm_block or task.station_code}",
+                operational_effect="Electric traction isolated; diesel locomotives or regulation required",
+            )
+        )
+
+    signalling_impacts: list[SignallingImpactItem] = []
+    if any(k in maint_lower for k in ["signal", "point", "interlock", "axle", "track circuit", "telecom", "relay"]) or "s&t" in dept_lower or "signal" in dept_lower:
+        signalling_impacts.append(
+            SignallingImpactItem(
+                signalling_asset=f"Signal & Interlocking Circuit ({norm_block or task.station_code})",
+                location=norm_block or task.station_code or "N/A",
+                restriction="Non-Interlocked (NI) working / Point machine isolated",
+                window=maint_window.restricted_period,
+                dependent_maintenance=f"Task #{task.id} - {task.maintenance_type}",
+                operational_effect="Automatic block signalling suspended; manual piloting with caution required",
+            )
+        )
+
+    departments_detail: list[DepartmentImpactItem] = [
+        DepartmentImpactItem(
+            department=d,
+            task_count=1,
+            crews_involved=[c["name"] for c in crews_involved if c.get("department") == d] or [c["name"] for c in crews_involved],
+            affected_assets=[norm_block or task.station_code or "Corridor"],
+            planned_window=maint_window.restricted_period,
+            coordination_requirement=f"Coordinate with Section Controller for {d} block possession and track clearance",
+        )
+        for d in sorted(list(set(depts)))
+    ]
+
+    restricted_assets_detail: list[RestrictedAssetItem] = []
+    if norm_block:
+        restricted_assets_detail.append(
+            RestrictedAssetItem(
+                asset_code=norm_block,
+                asset_name=block.name if block else f"Block {norm_block}",
+                asset_type="Block Section",
+                restriction_type="Full Corridor Possession",
+                restriction_window=maint_window.restricted_period,
+                reason=f"{task.maintenance_type} execution",
+                status="Restricted",
+                affected_operations=f"Suspends through-movements; {len(unique_train_numbers)} trains modeled for regulation",
+            )
+        )
+    elif task.station_code:
+        restricted_assets_detail.append(
+            RestrictedAssetItem(
+                asset_code=task.station_code,
+                asset_name=f"Station {task.station_code}",
+                asset_type="Station Yard / Loop",
+                restriction_type="Platform / Loop Line Possession",
+                restriction_window=maint_window.restricted_period,
+                reason=f"{task.maintenance_type} execution",
+                status="Restricted",
+                affected_operations="Station platform/loop line occupied; through traffic restricted",
+            )
+        )
+
     # 12. Explanation
     exp_parts = [
         f"Task #{task.id} ({task.maintenance_type}) on {norm_block or task.station_code} "
@@ -481,6 +581,11 @@ def analyze_task_impact(
         asset_impact=asset_impact,
         traffic_impact=traffic_impact,
         maintenance_window_impact=maint_window,
+        speed_restrictions=speed_restrictions,
+        power_blocks=power_blocks,
+        signalling_impacts=signalling_impacts,
+        departments_detail=departments_detail,
+        restricted_assets_detail=restricted_assets_detail,
         predictive_origin=pred_origin,
         urgency_context=urgency_ctx,
         baseline_vs_optimized=None,
@@ -498,10 +603,19 @@ def analyze_bundle_impact(
     """
     clean_id = bundle_id.strip().upper()
     bundles = bundle_compatible_maintenance(db=db, persist=False)
-    bundle = next((b for b in bundles if b.get("bundle_id", "").upper() == clean_id), None)
+    bundle = next(
+        (
+            b for b in bundles
+            if b.get("bundle_id", "").upper() == clean_id
+            or b.get("bundle_id", "").upper() == f"BUNDLE-{clean_id}"
+            or _normalize_code(b.get("block_code")) == clean_id
+        ),
+        None,
+    )
 
     if not bundle:
         raise HTTPException(status_code=404, detail=f"Maintenance bundle '{bundle_id}' not found.")
+    actual_bundle_id = bundle.get("bundle_id", clean_id)
 
     norm_block = _normalize_code(bundle.get("block_code"))
     block = db.scalar(select(Block).where(Block.code == norm_block))
@@ -577,17 +691,22 @@ def analyze_bundle_impact(
             t_rec = db.scalar(select(Train).where(Train.train_number == t_num))
 
             conflicts.append({
-                "train_id": tr.get("train_id"),
+                "train_id": tr.get("train_id") or (t_rec.id if t_rec else None),
                 "train_number": t_num,
                 "train_name": t_rec.name if t_rec else tr.get("name", f"Train {t_num}"),
-                "current_station": t_rec.current_station_code if t_rec else None,
+                "train_type": t_rec.train_type if t_rec else (tr.get("train_type") or "Express"),
+                "source_station": t_rec.source_station_code if t_rec else None,
+                "destination_station": t_rec.destination_station_code if t_rec else None,
+                "current_station": t_rec.current_station_code if t_rec else (t_rec.source_station_code if t_rec else None),
+                "direction": t_rec.direction if t_rec else "UP",
                 "affected_block": norm_block,
                 "conflict_type": "Schedule Overlap",
-                "priority": tr.get("priority"),
+                "priority": tr.get("priority") or (t_rec.priority if t_rec else "Normal"),
+                "status": t_rec.status if t_rec else "SCHEDULED",
                 "eta_minute": eta,
                 "depart_minute": dep,
-                "delay_minutes": None,
-                "conflict_severity": "High" if str(tr.get("priority")).lower() in ("critical", "high") else "Medium",
+                "delay_minutes": t_rec.delay_minutes if t_rec else None,
+                "conflict_severity": "High" if str(tr.get("priority") or (t_rec.priority if t_rec else "")).lower() in ("critical", "high") else "Medium",
                 "recommendation": "Hold at previous station or route via alternate line during window.",
             })
 
@@ -616,6 +735,9 @@ def analyze_bundle_impact(
             "required_crew_size": c_req_size,
             "available_capacity": c_cap,
             "tasks_assigned_count": len(c_task_ids),
+            "location": norm_block,
+            "availability": (c_obj.status if c_obj else "Available"),
+            "scheduled_window": f"{start_dt.strftime('%H:%M')}–{end_dt.strftime('%H:%M')}",
             "workload_notes": f"Assigned {len(c_task_ids)} bundle task(s) within team capacity {c_cap}",
         })
 
@@ -750,6 +872,75 @@ def analyze_bundle_impact(
         impact_level=impact_level,
     )
 
+    # 10b. Bundle cross-functional impacts
+    all_maint_text = " ".join(maint_types).lower()
+    all_depts_text = " ".join(departments).lower()
+
+    bundle_speed_restrictions: list[SpeedRestrictionItem] = []
+    if any(k in all_maint_text for k in ["track", "tamping", "rail", "sleeper", "ballast", "deep screening", "welding"]) or "engineering" in all_depts_text or "civil" in all_depts_text:
+        bundle_speed_restrictions.append(
+            SpeedRestrictionItem(
+                block_code=norm_block,
+                section_name=block.name if block else norm_block,
+                restriction_speed_kmph=30,
+                normal_speed_kmph=100,
+                restriction_window=maint_window.restricted_period,
+                reason="Coordinated track corridor possession and post-work caution order",
+                affected_trains_count=len(unique_train_numbers),
+            )
+        )
+
+    bundle_power_blocks: list[PowerBlockItem] = []
+    if any(k in all_maint_text for k in ["ohe", "power", "electrical", "traction", "catenary", "substation"]) or "electrical" in all_depts_text or "trd" in all_depts_text:
+        bundle_power_blocks.append(
+            PowerBlockItem(
+                location=norm_block,
+                power_block_type="OHE 25kV AC Traction Power Isolation",
+                window=maint_window.restricted_period,
+                department="Electrical (TRD)",
+                affected_assets=f"Overhead Equipment (OHE) section {norm_block}",
+                operational_effect="Electric traction isolated during bundle window; diesel haulage or holding required",
+            )
+        )
+
+    bundle_signalling_impacts: list[SignallingImpactItem] = []
+    if any(k in all_maint_text for k in ["signal", "point", "interlock", "axle", "track circuit", "telecom"]) or "s&t" in all_depts_text or "signal" in all_depts_text:
+        bundle_signalling_impacts.append(
+            SignallingImpactItem(
+                signalling_asset=f"Signal & Interlocking Circuit ({norm_block})",
+                location=norm_block,
+                restriction="Non-Interlocked (NI) working / Joint S&T disconnection",
+                window=maint_window.restricted_period,
+                dependent_maintenance=f"Bundle {clean_id} ({len(tasks)} tasks)",
+                operational_effect="Automatic block signalling suspended; coordinated testing with Engineering/TRD",
+            )
+        )
+
+    bundle_departments_detail: list[DepartmentImpactItem] = [
+        DepartmentImpactItem(
+            department=d,
+            task_count=len([t for t in tasks if (t.get("department") or "Engineering") == d]),
+            crews_involved=[c["name"] for c in crews_involved if c.get("department") == d] or [c["name"] for c in crews_involved],
+            affected_assets=[norm_block],
+            planned_window=maint_window.restricted_period,
+            coordination_requirement=f"Coordinated joint window with {', '.join([dept for dept in departments if dept != d]) or 'Traffic Controller'}",
+        )
+        for d in departments
+    ]
+
+    bundle_restricted_assets_detail: list[RestrictedAssetItem] = [
+        RestrictedAssetItem(
+            asset_code=norm_block,
+            asset_name=block.name if block else f"Block {norm_block}",
+            asset_type="Block Section",
+            restriction_type="Coordinated Multi-Department Corridor Possession",
+            restriction_window=maint_window.restricted_period,
+            reason=f"Multi-department maintenance ({', '.join(maint_types)})",
+            status="Restricted",
+            affected_operations=f"Suspends through-movements; {len(unique_train_numbers)} trains regulated across joint window",
+        )
+    ]
+
     # 11. Explanation
     exp = (
         f"Bundle {clean_id} on {norm_block} coordinates {len(tasks)} tasks across "
@@ -760,7 +951,7 @@ def analyze_bundle_impact(
 
     return MaintenanceImpactResponse(
         target_type="bundle",
-        target_id=clean_id,
+        target_id=actual_bundle_id,
         block_code=norm_block,
         maintenance_types=maint_types,
         window_start=start_dt.isoformat(),
@@ -776,6 +967,11 @@ def analyze_bundle_impact(
         asset_impact=asset_impact,
         traffic_impact=traffic_impact,
         maintenance_window_impact=maint_window,
+        speed_restrictions=bundle_speed_restrictions,
+        power_blocks=bundle_power_blocks,
+        signalling_impacts=bundle_signalling_impacts,
+        departments_detail=bundle_departments_detail,
+        restricted_assets_detail=bundle_restricted_assets_detail,
         predictive_origin=None,
         urgency_context=None,
         baseline_vs_optimized=baseline_vs_opt,
@@ -861,17 +1057,22 @@ def analyze_what_if_impact(
             unique_train_numbers.add(t_num)
             t_rec = db.scalar(select(Train).where(Train.train_number == t_num))
             conflicts.append({
-                "train_id": tr.get("train_id"),
+                "train_id": tr.get("train_id") or (t_rec.id if t_rec else None),
                 "train_number": t_num,
                 "train_name": t_rec.name if t_rec else tr.get("name", f"Train {t_num}"),
-                "current_station": t_rec.current_station_code if t_rec else None,
+                "train_type": t_rec.train_type if t_rec else (tr.get("train_type") or "Express"),
+                "source_station": t_rec.source_station_code if t_rec else None,
+                "destination_station": t_rec.destination_station_code if t_rec else None,
+                "current_station": t_rec.current_station_code if t_rec else (t_rec.source_station_code if t_rec else None),
+                "direction": t_rec.direction if t_rec else "UP",
                 "affected_block": norm_block,
                 "conflict_type": "Schedule Overlap",
-                "priority": tr.get("priority"),
+                "priority": tr.get("priority") or (t_rec.priority if t_rec else "Normal"),
+                "status": t_rec.status if t_rec else "SCHEDULED",
                 "eta_minute": eta,
                 "depart_minute": dep,
-                "delay_minutes": None,
-                "conflict_severity": "High" if str(tr.get("priority")).lower() in ("critical", "high") else "Medium",
+                "delay_minutes": t_rec.delay_minutes if t_rec else None,
+                "conflict_severity": "High" if str(tr.get("priority") or (t_rec.priority if t_rec else "")).lower() in ("critical", "high") else "Medium",
                 "recommendation": "Adjusted via What-If simulation window.",
             })
 
@@ -900,6 +1101,9 @@ def analyze_what_if_impact(
             "required_crew_size": c_req_size,
             "available_capacity": c_cap,
             "tasks_assigned_count": len(c_task_ids),
+            "location": norm_block,
+            "availability": (c_obj.status if c_obj else "Available"),
+            "scheduled_window": f"{start_dt.strftime('%H:%M')}–{end_dt.strftime('%H:%M')}",
             "workload_notes": f"Assigned to {len(c_task_ids)} simulated task(s)",
         })
 
@@ -1007,6 +1211,75 @@ def analyze_what_if_impact(
 
     maint_types = sorted(list({t.get("maintenance_type", "Maintenance") for t in target_plan.tasks}))
 
+    # What-If cross-functional impacts
+    all_maint_text = " ".join(maint_types).lower()
+    all_depts_text = " ".join(departments).lower()
+
+    what_if_speed_restrictions: list[SpeedRestrictionItem] = []
+    if any(k in all_maint_text for k in ["track", "tamping", "rail", "sleeper", "ballast", "deep screening", "welding"]) or "engineering" in all_depts_text or "civil" in all_depts_text:
+        what_if_speed_restrictions.append(
+            SpeedRestrictionItem(
+                block_code=norm_block,
+                section_name=block.name if block else norm_block,
+                restriction_speed_kmph=30,
+                normal_speed_kmph=100,
+                restriction_window=maint_window.restricted_period,
+                reason="Simulated track corridor possession and caution order",
+                affected_trains_count=len(unique_train_numbers),
+            )
+        )
+
+    what_if_power_blocks: list[PowerBlockItem] = []
+    if any(k in all_maint_text for k in ["ohe", "power", "electrical", "traction", "catenary", "substation"]) or "electrical" in all_depts_text or "trd" in all_depts_text:
+        what_if_power_blocks.append(
+            PowerBlockItem(
+                location=norm_block,
+                power_block_type="OHE 25kV AC Traction Power Isolation",
+                window=maint_window.restricted_period,
+                department="Electrical (TRD)",
+                affected_assets=f"Overhead Equipment (OHE) section {norm_block}",
+                operational_effect="Simulated electric traction isolation during window",
+            )
+        )
+
+    what_if_signalling_impacts: list[SignallingImpactItem] = []
+    if any(k in all_maint_text for k in ["signal", "point", "interlock", "axle", "track circuit", "telecom"]) or "s&t" in all_depts_text or "signal" in all_depts_text:
+        what_if_signalling_impacts.append(
+            SignallingImpactItem(
+                signalling_asset=f"Signal & Interlocking Circuit ({norm_block})",
+                location=norm_block,
+                restriction="Non-Interlocked (NI) working / Simulated S&T disconnection",
+                window=maint_window.restricted_period,
+                dependent_maintenance=f"What-If Plan ({len(target_plan.tasks)} tasks)",
+                operational_effect="Automatic block signalling suspended; simulated manual piloting",
+            )
+        )
+
+    what_if_departments_detail: list[DepartmentImpactItem] = [
+        DepartmentImpactItem(
+            department=d,
+            task_count=len([t for t in target_plan.tasks if (t.get("department") or "Engineering") == d]),
+            crews_involved=[c["name"] for c in crews_involved if c.get("department") == d] or [c["name"] for c in crews_involved],
+            affected_assets=[norm_block],
+            planned_window=maint_window.restricted_period,
+            coordination_requirement=f"Simulated coordination with {', '.join([dept for dept in departments if dept != d]) or 'Traffic Controller'}",
+        )
+        for d in departments
+    ]
+
+    what_if_restricted_assets_detail: list[RestrictedAssetItem] = [
+        RestrictedAssetItem(
+            asset_code=norm_block,
+            asset_name=block.name if block else f"Block {norm_block}",
+            asset_type="Block Section",
+            restriction_type="Corridor Possession",
+            restriction_window=maint_window.restricted_period,
+            reason=f"What-If maintenance ({', '.join(maint_types)})",
+            status="Restricted",
+            affected_operations=f"Suspends through-movements; {len(unique_train_numbers)} trains modeled for regulation",
+        )
+    ]
+
     return MaintenanceImpactResponse(
         target_type="what-if",
         target_id=sim_res.scenario_id,
@@ -1025,6 +1298,11 @@ def analyze_what_if_impact(
         asset_impact=asset_impact,
         traffic_impact=traffic_impact,
         maintenance_window_impact=maint_window,
+        speed_restrictions=what_if_speed_restrictions,
+        power_blocks=what_if_power_blocks,
+        signalling_impacts=what_if_signalling_impacts,
+        departments_detail=what_if_departments_detail,
+        restricted_assets_detail=what_if_restricted_assets_detail,
         predictive_origin=None,
         urgency_context=None,
         baseline_vs_optimized=baseline_vs_opt,

@@ -53,10 +53,15 @@ class TrainConflictItem(BaseModel):
     train_id: int | None = None
     train_number: str
     train_name: str
+    train_type: str | None = None
+    source_station: str | None = None
+    destination_station: str | None = None
     current_station: str | None = None
+    direction: str | None = None
     affected_block: str
     conflict_type: str = "Schedule Overlap"
     priority: str | None = None
+    status: str | None = None
     eta_minute: int = 0
     depart_minute: int = 0
     delay_minutes: int | None = None  # None if not calculated, never fabricated
@@ -165,6 +170,54 @@ class BaselineVsOptimized(BaseModel):
     maintenance_duration_after: int | None = None
 
 
+class SpeedRestrictionItem(BaseModel):
+    block_code: str
+    section_name: str
+    restriction_speed_kmph: int = 30
+    normal_speed_kmph: int = 100
+    restriction_window: str
+    reason: str
+    affected_trains_count: int = 0
+
+
+class PowerBlockItem(BaseModel):
+    location: str
+    power_block_type: str = "OHE 25kV AC Traction Power Isolation"
+    window: str
+    department: str = "Electrical (TRD)"
+    affected_assets: str
+    operational_effect: str
+
+
+class SignallingImpactItem(BaseModel):
+    signalling_asset: str
+    location: str
+    restriction: str = "Non-Interlocked (NI) working / Point machine isolated"
+    window: str
+    dependent_maintenance: str
+    operational_effect: str
+
+
+class DepartmentImpactItem(BaseModel):
+    department: str
+    task_count: int = 1
+    crews_involved: list[str] = Field(default_factory=list)
+    affected_assets: list[str] = Field(default_factory=list)
+    planned_window: str
+    coordination_requirement: str
+
+
+class RestrictedAssetItem(BaseModel):
+    asset_code: str
+    asset_name: str
+    asset_type: str = "Block Section"
+    restriction_type: str = "Full Corridor Possession"
+    restriction_window: str
+    reason: str
+    status: str = "Restricted"
+    affected_operations: str
+
+
 class MaintenanceImpactResponse(BaseModel):
     target_type: str = Field(..., description="'task', 'bundle', or 'what-if'")
     target_id: str = Field(..., description="ID of the task or bundle")
@@ -183,6 +236,11 @@ class MaintenanceImpactResponse(BaseModel):
     asset_impact: AssetAvailabilityImpact
     traffic_impact: TrafficImpact
     maintenance_window_impact: MaintenanceWindowImpact
+    speed_restrictions: list[SpeedRestrictionItem] = Field(default_factory=list)
+    power_blocks: list[PowerBlockItem] = Field(default_factory=list)
+    signalling_impacts: list[SignallingImpactItem] = Field(default_factory=list)
+    departments_detail: list[DepartmentImpactItem] = Field(default_factory=list)
+    restricted_assets_detail: list[RestrictedAssetItem] = Field(default_factory=list)
     predictive_origin: dict[str, Any] | None = None
     urgency_context: dict[str, Any] | None = None
     baseline_vs_optimized: BaselineVsOptimized | None = None
