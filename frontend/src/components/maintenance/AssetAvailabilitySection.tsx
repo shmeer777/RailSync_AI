@@ -114,10 +114,28 @@ export default function AssetAvailabilitySection({
         )
       }
     } else {
+      // Check local storage fallback for persistent approval
+      try {
+        const stored = localStorage.getItem(`railsync_asset_availability_approved_${planningWindow}`)
+        if (stored) {
+          const parsed = JSON.parse(stored)
+          if (parsed.approved) {
+            setApproved(true)
+            if (parsed.approved_at) {
+              const timeStr = new Date(parsed.approved_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+              setApprovalMessage(
+                `Schedule approved by ${parsed.approved_by || 'Section Controller'} at ${timeStr}.`
+              )
+            }
+            return
+          }
+        }
+      } catch (_) {}
+
       setApproved(false)
       setApprovalMessage(null)
     }
-  }, [data?.approved, data?.approved_at, data?.approved_by])
+  }, [data?.approved, data?.approved_at, data?.approved_by, planningWindow])
 
   const handleReoptimize = async () => {
     try {
@@ -136,6 +154,9 @@ export default function AssetAvailabilitySection({
       if (!result.approved) {
         setApproved(false)
         setApprovalMessage(null)
+        try {
+          localStorage.removeItem(`railsync_asset_availability_approved_${planningWindow}`)
+        } catch (_) {}
       }
     } catch (err: any) {
       setError(err.message || 'Failed to re-optimize asset availability.')
@@ -168,6 +189,12 @@ export default function AssetAvailabilitySection({
     setApprovalError(null)
 
     try {
+      console.info('[RailSync AI] Approving asset availability schedule...', {
+        planningWindow,
+        staggerEnabled,
+        selectedBlockFilter,
+      })
+
       const res = await approveAssetAvailabilitySchedule({
         planning_window: planningWindow,
         stagger_multi_blocks: staggerEnabled,
@@ -176,10 +203,41 @@ export default function AssetAvailabilitySection({
         human_approved: true,
       })
 
+      console.info('[RailSync AI] Asset availability approval successful:', res)
+
+      const approvedAt = res.approved_at || new Date().toISOString()
+      const approvedBy = res.approved_by || 'Section Controller'
+
       setApproved(true)
       setApprovalMessage(res.message || 'Asset availability schedule approved successfully.')
+
+      // Update local storage for immediate persistence
+      try {
+        localStorage.setItem(
+          `railsync_asset_availability_approved_${planningWindow}`,
+          JSON.stringify({ approved: true, approved_at: approvedAt, approved_by: approvedBy })
+        )
+      } catch (_) {}
+
+      // Update data state so useEffect does not revert approved status
+      if (res.schedule) {
+        setData(res.schedule)
+      } else {
+        setData((prev) =>
+          prev
+            ? {
+                ...prev,
+                approved: true,
+                approved_at: approvedAt,
+                approved_by: approvedBy,
+              }
+            : prev
+        )
+      }
+
       onPlanApproved?.()
     } catch (err: any) {
+      console.error('[RailSync AI] Asset availability approval failed:', err)
       setApprovalError(err.message || 'Failed to approve schedule.')
       setApproved(false)
     } finally {
@@ -399,9 +457,11 @@ export default function AssetAvailabilitySection({
         </div>
 
         <button
+          id="btn-approve-asset-availability-schedule"
           type="button"
           onClick={handleApprove}
           disabled={approving || approved}
+          title={approved ? 'Asset availability schedule is approved' : 'Approve optimized asset availability schedule'}
           style={{
             height: '38px',
             padding: '0 18px',
@@ -433,7 +493,7 @@ export default function AssetAvailabilitySection({
           ) : (
             <>
               <CheckCircle2 size={16} />
-              Approve Schedule
+              ✓ Approve Schedule
             </>
           )}
         </button>

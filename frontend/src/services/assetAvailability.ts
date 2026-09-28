@@ -92,6 +92,7 @@ export interface AssetAvailabilityApproveResponse {
   human_approval_completed: boolean
   updated_tasks_count: number
   planning_window: string
+  schedule?: AssetAvailabilityResponse | null
 }
 
 export interface AssetAvailabilityOptimizeRequest {
