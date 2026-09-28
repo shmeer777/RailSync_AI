@@ -323,5 +323,32 @@ def test_what_if_api_endpoint(in_memory_db):
         assert apply_data["human_approved"] is True
         assert apply_data["updated_records_count"] == 3
 
+        # Test duplicate apply is rejected (HTTP 409)
+        duplicate_resp = client.post(
+            "/ai/maintenance-what-if/apply",
+            json={
+                "block_code": "GNT-BZA-01",
+                "scenario_id": data["scenario_id"],
+                "human_approved": True,
+                "approved_by": "Test Controller",
+            },
+        )
+        assert duplicate_resp.status_code == 409
+        assert "already been applied" in duplicate_resp.json()["detail"]
+
+        # Test empty controller name is rejected (HTTP 400)
+        empty_ctrl_resp = client.post(
+            "/ai/maintenance-what-if/apply",
+            json={
+                "block_code": "GNT-BZA-01",
+                "scenario_id": "SIM-TEST99",
+                "human_approved": True,
+                "approved_by": "   ",
+            },
+        )
+        assert empty_ctrl_resp.status_code == 400
+        assert "controller name is required" in empty_ctrl_resp.json()["detail"].lower()
+
     finally:
         app.dependency_overrides.clear()
+

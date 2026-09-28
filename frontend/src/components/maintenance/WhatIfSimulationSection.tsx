@@ -81,6 +81,9 @@ export default function WhatIfSimulationSection({
   const [humanConfirmed, setHumanConfirmed] = useState<boolean>(false)
   const [applying, setApplying] = useState<boolean>(false)
   const [applyResult, setApplyResult] = useState<WhatIfApplyResponse | null>(null)
+  const [modalError, setModalError] = useState<string>('')
+  const [applySuccess, setApplySuccess] = useState<boolean>(false)
+  const [isPlanApplied, setIsPlanApplied] = useState<boolean>(false)
 
   useEffect(() => {
     async function loadCrews() {
@@ -133,6 +136,10 @@ export default function WhatIfSimulationSection({
     setPlanningWindow('night')
     setSimulationResult(null)
     setSimulationError('')
+    setModalError('')
+    setApplySuccess(false)
+    setIsPlanApplied(false)
+    setApplyResult(null)
   }
 
   const applyPreset = (preset: 'shift_23' | 'delay_prereq' | 'swap_crew' | 'unbundle') => {
@@ -157,6 +164,10 @@ export default function WhatIfSimulationSection({
   const handleRunSimulation = async () => {
     setSimulating(true)
     setSimulationError('')
+    setModalError('')
+    setApplySuccess(false)
+    setIsPlanApplied(false)
+    setApplyResult(null)
 
     const overridesList: TaskOverride[] = Object.values(taskOverrides).filter(
       (o) =>
@@ -185,7 +196,28 @@ export default function WhatIfSimulationSection({
   }
 
   const handleApplySimulatedPlan = async () => {
-    if (!simulationResult || !humanConfirmed) return
+    if (applying || applySuccess) return
+    setModalError('')
+
+    // 1. Validate simulation result exists
+    if (!simulationResult) {
+      setModalError('No simulated plan found. Please run a simulation before applying.')
+      return
+    }
+
+    // 2. Validate authorizing controller name
+    const trimmedApprover = approverName.trim()
+    if (!trimmedApprover) {
+      setModalError('Authorizing Controller Name is required.')
+      return
+    }
+
+    // 3. Validate safety and sectional headway confirmation
+    if (!humanConfirmed) {
+      setModalError('Please confirm that the operational schedule satisfies sectional headways and safety regulations.')
+      return
+    }
+
     setApplying(true)
 
     try {
@@ -193,16 +225,31 @@ export default function WhatIfSimulationSection({
         block_code: simulationResult.block_code,
         scenario_id: simulationResult.scenario_id,
         human_approved: true,
-        approved_by: approverName.trim() || 'Chief Section Controller',
+        approved_by: trimmedApprover,
         notes: approvalNotes.trim() || null,
       })
+
       setApplyResult(res)
-      setShowApplyModal(false)
+      setApplySuccess(true)
+      setIsPlanApplied(true)
+      setSimulationError('')
+
+      // Reload live block tasks to update live schedule view
+      await loadBlockTasks(simulationResult.block_code)
+
       if (onPlanApplied) {
         onPlanApplied()
       }
+
+      // Display "✓ Applied Successfully" on the button for 1 second, then close modal
+      setTimeout(() => {
+        setShowApplyModal(false)
+        setApplySuccess(false)
+      }, 1000)
     } catch (err: any) {
-      setSimulationError(err.message || 'Failed to apply simulated plan.')
+      const errMsg = err.message || 'Failed to apply simulated plan.'
+      setModalError(errMsg)
+      setSimulationError(errMsg)
     } finally {
       setApplying(false)
     }
@@ -387,15 +434,24 @@ export default function WhatIfSimulationSection({
               Simulation evaluates all active train timetables with zero database mutation.
             </span>
             <button
+              id="open-apply-modal-btn"
               type="button"
               onClick={() => {
+                if (!simulationResult) {
+                  setSimulationError('Please run a simulation first before applying the plan to the live schedule.')
+                  return
+                }
+                setModalError('')
+                setApplySuccess(false)
                 setHumanConfirmed(false)
                 setShowApplyModal(true)
               }}
+              disabled={simulating || isPlanApplied}
               className="enterprise-btn-primary"
+              style={isPlanApplied ? { background: '#2E8B57', borderColor: '#2E8B57', cursor: 'default' } : undefined}
             >
               <Check size={14} />
-              <span>Apply Simulated Plan</span>
+              <span>{isPlanApplied ? '✓ Plan Applied to Live Schedule' : 'Apply Simulated Plan'}</span>
             </button>
           </div>
         </div>
@@ -568,6 +624,26 @@ export default function WhatIfSimulationSection({
                 Committing this scenario will update the active maintenance timetable and lock the coordinated corridor window.
               </p>
 
+              {modalError && (
+                <div
+                  id="apply-modal-error"
+                  style={{
+                    padding: '8px 12px',
+                    borderRadius: '5px',
+                    background: 'rgba(239, 68, 68, 0.15)',
+                    border: '1px solid rgba(239, 68, 68, 0.4)',
+                    color: '#F87171',
+                    fontSize: '12px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                  }}
+                >
+                  <AlertTriangle size={15} style={{ flexShrink: 0 }} />
+                  <span>{modalError}</span>
+                </div>
+              )}
+
               <div>
                 <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: 'var(--text-primary, #F5F5F5)', marginBottom: '5px' }}>
                   Authorizing Controller Name:
@@ -575,7 +651,11 @@ export default function WhatIfSimulationSection({
                 <input
                   type="text"
                   value={approverName}
-                  onChange={(e) => setApproverName(e.target.value)}
+                  onChange={(e) => {
+                    setApproverName(e.target.value)
+                    if (modalError) setModalError('')
+                  }}
+                  placeholder="e.g. Chief Section Controller"
                   style={{ width: '100%', padding: '8px 10px', borderRadius: '5px', border: '1px solid var(--border-light, #2A2D32)', background: 'var(--bg-input, #121416)', fontSize: '12px', color: 'var(--text-primary, #F5F5F5)', boxSizing: 'border-box' }}
                 />
               </div>
@@ -588,6 +668,7 @@ export default function WhatIfSimulationSection({
                   rows={2}
                   value={approvalNotes}
                   onChange={(e) => setApprovalNotes(e.target.value)}
+                  placeholder="Optional approval dispatch notes"
                   style={{ width: '100%', padding: '8px 10px', borderRadius: '5px', border: '1px solid var(--border-light, #2A2D32)', background: 'var(--bg-input, #121416)', fontSize: '12px', color: 'var(--text-primary, #F5F5F5)', resize: 'none', boxSizing: 'border-box' }}
                 />
               </div>
@@ -596,7 +677,10 @@ export default function WhatIfSimulationSection({
                 <input
                   type="checkbox"
                   checked={humanConfirmed}
-                  onChange={(e) => setHumanConfirmed(e.target.checked)}
+                  onChange={(e) => {
+                    setHumanConfirmed(e.target.checked)
+                    if (modalError) setModalError('')
+                  }}
                   style={{ width: '16px', height: '16px', accentColor: '#1F5F9C' }}
                 />
                 I confirm this operational schedule satisfies sectional headways and safety regulations.
@@ -606,18 +690,31 @@ export default function WhatIfSimulationSection({
                 <button
                   type="button"
                   onClick={() => setShowApplyModal(false)}
+                  disabled={applying || applySuccess}
                   className="enterprise-btn-secondary"
                 >
                   Cancel
                 </button>
                 <button
+                  id="confirm-apply-modal-btn"
                   type="button"
                   onClick={handleApplySimulatedPlan}
-                  disabled={applying || !humanConfirmed}
+                  disabled={applying || applySuccess}
                   className="enterprise-btn-primary"
+                  style={applySuccess ? { background: '#2E8B57', borderColor: '#2E8B57' } : undefined}
                 >
-                  {applying ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={14} />}
-                  <span>{applying ? 'Applying...' : 'Confirm & Apply'}</span>
+                  {applying ? (
+                    <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} />
+                  ) : (
+                    <Check size={14} />
+                  )}
+                  <span>
+                    {applying
+                      ? 'Applying...'
+                      : applySuccess
+                      ? '✓ Applied Successfully'
+                      : 'Confirm & Apply'}
+                  </span>
                 </button>
               </div>
             </div>

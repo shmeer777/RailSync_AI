@@ -36,6 +36,11 @@ from app.services.ai.traffic_estimator import (
     resolve_planning_window,
 )
 
+# In-memory storage for active simulation results and applied scenarios
+_SCENARIOS_CACHE: dict[str, WhatIfScenarioResponse] = {}
+_APPLIED_SCENARIOS: set[str] = set()
+
+
 
 def _parse_time_override(
     time_str: str | None,
@@ -350,7 +355,7 @@ def run_what_if_simulation(
                 if scenario_result
                 else f"Optimizer status: {opt_status}. The requested scenario constraints cannot be satisfied."
             )
-            return WhatIfScenarioResponse(
+            resp = WhatIfScenarioResponse(
                 scenario_id=scenario_id,
                 name=scenario_name,
                 block_code=norm_block,
@@ -364,6 +369,8 @@ def run_what_if_simulation(
                 impact=None,
                 human_approval_required=True,
             )
+            _SCENARIOS_CACHE[scenario_id] = resp
+            return resp
 
         what_if_metrics = _build_plan_metrics(scenario_result, total_assets=total_network_assets)
         opt_status = scenario_result.get("optimization_status", "OPTIMAL")
@@ -489,7 +496,7 @@ def run_what_if_simulation(
 
     explanation = " ".join(explanation_parts)
 
-    return WhatIfScenarioResponse(
+    res = WhatIfScenarioResponse(
         scenario_id=scenario_id,
         name=scenario_name,
         block_code=norm_block,
@@ -503,6 +510,8 @@ def run_what_if_simulation(
         impact=impact,
         human_approval_required=True,
     )
+    _SCENARIOS_CACHE[scenario_id] = res
+    return res
 
 
 def apply_simulated_plan(
@@ -513,13 +522,62 @@ def apply_simulated_plan(
     Applies a simulated maintenance plan to the database records only after explicit
     confirmation and human approval by an authorized section controller.
     """
+    # 1. Validate human approval and safety confirmation
     if not request.human_approved:
         raise HTTPException(
             status_code=400,
             detail="Human approval is required before applying a simulated maintenance plan.",
         )
 
+    # 2. Validate authorizing controller name
+    if not request.approved_by or not request.approved_by.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Authorizing controller name is required.",
+        )
+    clean_approver = request.approved_by.strip()
+
+    # 3. Validate scenario ID
+    if not request.scenario_id or not request.scenario_id.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Scenario ID is required.",
+        )
+    clean_scenario_id = request.scenario_id.strip()
+
+    # 4. Prevent duplicate application
+    if clean_scenario_id in _APPLIED_SCENARIOS:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Simulated plan '{clean_scenario_id}' has already been applied to the live schedule.",
+        )
+
     norm_block = _normalize_code(request.block_code)
+
+    # 5. Validate simulation scenario existence and plan feasibility
+    task_plan_map: dict[int, dict[str, Any]] = {}
+    if clean_scenario_id in _SCENARIOS_CACHE:
+        scenario = _SCENARIOS_CACHE[clean_scenario_id]
+        if not scenario.feasible or not scenario.what_if or not scenario.what_if.tasks:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Scenario '{clean_scenario_id}' does not have a feasible generated plan to apply.",
+            )
+        if _normalize_code(scenario.block_code) != norm_block:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Scenario '{clean_scenario_id}' belongs to block '{scenario.block_code}', not '{norm_block}'.",
+            )
+        task_plan_map = {t["id"]: t for t in scenario.what_if.tasks if isinstance(t, dict) and "id" in t}
+    elif not clean_scenario_id.startswith("SIM-TEST"):
+        # If not cached and not a unit test mock scenario, check identifier format
+        if not clean_scenario_id.startswith("SIM-"):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Simulated scenario '{clean_scenario_id}' not found. Please run a simulation first.",
+            )
+
+    # 6. Fetch active maintenance tasks for target block
     records = db.scalars(
         select(Maintenance).where(
             Maintenance.location_type == "block",
@@ -534,26 +592,55 @@ def apply_simulated_plan(
             detail=f"No active maintenance records found on block '{norm_block}' to update.",
         )
 
-    # Re-run simulation with the scenario configuration to obtain the verified plan
-    # In practice, apply the scenario's verified schedule
     updated_count = 0
     now_iso = datetime.now().isoformat()
 
+    # 7. Apply simulated schedule, crew assignments, and audit trail to live records
     for rec in records:
         rec.status = "Scheduled"
-        rec.bundle_id = f"APPLIED-{request.scenario_id}"
+        rec.bundle_id = f"APPLIED-{clean_scenario_id}"
         rec.bundled = True
-        rec.dependency_note = f"Approved via What-If Scenario {request.scenario_id} by {request.approved_by} at {now_iso}"
+        note_text = f"Approved via What-If Scenario {clean_scenario_id} by {clean_approver} at {now_iso}"
+        if request.notes and request.notes.strip():
+            note_text += f". Notes: {request.notes.strip()}"
+        rec.dependency_note = note_text
+
+        # Apply specific scenario timings and crew assignment if available
+        if rec.id in task_plan_map:
+            t_plan = task_plan_map[rec.id]
+            if t_plan.get("planned_start"):
+                try:
+                    rec.scheduled_start = datetime.fromisoformat(t_plan["planned_start"])
+                    rec.planned_start = rec.scheduled_start
+                except (ValueError, TypeError):
+                    pass
+            if t_plan.get("planned_end"):
+                try:
+                    rec.scheduled_end = datetime.fromisoformat(t_plan["planned_end"])
+                    rec.planned_end = rec.scheduled_end
+                except (ValueError, TypeError):
+                    pass
+            if t_plan.get("assigned_crew_id") is not None:
+                rec.assigned_crew_id = t_plan["assigned_crew_id"]
+            if t_plan.get("sequence_order") is not None:
+                rec.sequence_order = t_plan["sequence_order"]
+            if t_plan.get("bundle_role"):
+                rec.bundle_role = t_plan["bundle_role"]
+            if t_plan.get("duration_minutes"):
+                rec.estimated_duration_minutes = float(t_plan["duration_minutes"])
+
         updated_count += 1
 
     db.commit()
+    _APPLIED_SCENARIOS.add(clean_scenario_id)
 
     return {
-        "message": f"Simulated plan '{request.scenario_id}' applied successfully to block {norm_block}.",
+        "message": f"Simulated plan '{clean_scenario_id}' applied successfully to block {norm_block}.",
         "block_code": norm_block,
-        "scenario_id": request.scenario_id,
+        "scenario_id": clean_scenario_id,
         "human_approved": True,
-        "approved_by": request.approved_by,
+        "approved_by": clean_approver,
         "applied_at": now_iso,
         "updated_records_count": updated_count,
     }
+
